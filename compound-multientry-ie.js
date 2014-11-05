@@ -351,10 +351,10 @@
             /// <param name="iegIndex" type="IEGAPIndex"></param>
             /// <param name="range" type="IDBKeyRange"></param>
             /// <param name="dir" type="String"></param>
-            return new IEGAPRequest(this, iegIndex.objectStore.transaction, function (success, error) {
-                if (Array.isArray(range)) range = new IEGAPKeyRange(range, range);
-                var compound = range instanceof IEGAPKeyRange;
-                var idbRange = compound ?
+            return new IEGAPRequest(iegIndex, iegIndex.objectStore.transaction, function (success, error) {
+                var compound = Array.isArray(iegIndex.keyPath);
+                if (compound && Array.isArray(range)) range = new IEGAPKeyRange(range, range);
+                var idbRange = compound && range ?
                     IDBKeyRange.bound(compoundToString(range.lower), compoundToString(range.upper), range.lowerOpen, range.upperOpen) :
                     range;
                 
@@ -390,9 +390,9 @@
             },
             get: function(key) {
                 var thiz = this;
+                var req = this._idx.get(key);
                 return new IEGAPRequest(this, this.objectStore.transaction, function(success, error) {
                     // First request the meta-store for this index
-                    var req = this._idx.get(key);
                     req.onsuccess = function(ev) {
                         // Check if key was found. 
                         var foreignKey = req.result && req.result.fk;
@@ -413,8 +413,8 @@
             },
             getKey: function(key) {
                 var thiz = this;
-                return new IEGAPRequest(this, this.objectStore.transaction, function(success, error) {
-                    var req = this._idx.get(key);
+                var req = this._idx.get(key);
+                return new IEGAPRequest(this, this.objectStore.transaction, function (success, error) {
                     req.onsuccess = function (ev) {
                         var res = ev.target.result;
                         success(ev, res && res.fk);
@@ -472,20 +472,79 @@
         }
     });
 
+    function IEGAPEventTarget() {
+        this._el = {};
+    }
+
+    extend(IEGAPEventTarget.prototype, function() {
+        return {
+            addEventListener: function (type, listener) {
+                this._el[type] ? this._el[type].push(listener) : this._el[type] = [listener];
+            },
+            removeEventListener: function (type, listener) {
+                var listeners = this._el[type];
+                if (listeners) {
+                    var pos = listeners.indexOf(listener);
+                    if (pos !== -1) listeners.splice(pos, 1);
+                }
+            },
+            dispatchEvent: function (event) {
+                var listener = this["on" + event.type];
+                if (listener && listener(event) === false) return false;
+                var listeners = this._el[event.type];
+                if (listeners) {
+                    for (var i = 0, l = listeners.length; i < l; ++i) {
+                        listener = listeners[i];
+                        if ((listener.handleEvent || listener)(event) === false) return false;
+                    }
+                    return true;
+                }
+            }
+        }
+    });
+
+    //
+    // IEGAP version of IDBRequest
+    //
     function IEGAPRequest(source, transaction, deferred) {
+        this._el = {};
         this.source = source;
         this.transaction = transaction;
         var thiz = this;
+        var eventTargetProp = { get: function () { return thiz; } };
         deferred(function (e, result) {
             thiz.result = result;
-            e.target = thiz;
-            if (thiz.onsuccess) thiz.onsuccess(e);
+            Object.defineProperty(e, "target", eventTargetProp);
+            thiz.dispatchEvent(e);
         }, function (e, err) {
             thiz.error = err || e.target.error;
-            e.target = thiz;
-            if (thiz.onerror) thiz.onerror(e);
+            Object.defineProperty(e, "target", eventTargetProp);
+            if (e.type != "error") {
+                Object.defineProperty(e, "type", { get: function() { return "error"; } });
+            }
+            thiz.dispatchEvent(e);
         }, this);
     }
+    derive(IEGAPRequest).from(IEGAPEventTarget).extend({
+        onsuccess: null,
+        onerror: null,
+    });
+
+    //
+    // IDBOpenRequest
+    //
+    function IEGAPOpenRequest() {
+        IEGAPRequest.apply(this, arguments);
+    }
+    derive(IEGAPOpenRequest).from(IEGAPRequest).extend({
+        onblocked: null,
+        onupgradeneeded: null
+    });
+
+
+    //
+    // Our IDBKeyRange
+    //
 
     function IEGAPKeyRange(lower, upper, lowerOpen, upperOpen) {
         this.lower = lower;
@@ -493,6 +552,10 @@
         this.lowerOpen = lowerOpen;
         this.upperOpen = upperOpen;
     }
+
+    //
+    // DOMStringList
+    //
 
     function IEGAPStringList(a) {
         Object.defineProperties(a, {
@@ -523,14 +586,9 @@
         idb.open = override(idb.open, function(orig) {
             return function (name, version) {
                 var req = orig.apply(this, arguments);
-                return new IEGAPRequest(this, null, function (success, error, iegReq) {
-                    Object.defineProperties(iegReq, {
-                        onblocked: {
-                            get: function() { return req.onblocked; },
-                            set: function(value) { req.onblocked = value; }
-                        }
-                    });
+                return new IEGAPOpenRequest(this, null, function (success, error, iegReq) {
                     req.onerror = error;
+                    req.onblocked = iegReq.dispatchEvent;
                     req.onupgradeneeded = function (ev) {
                         iegReq.transaction = req.transaction;
                         var db = (iegReq.result = req.result);
@@ -539,18 +597,22 @@
                             var store = db.createObjectStore("$iegapmeta");
                             store.add(db._iegapmeta, 1);
                         }
-                        ev.target = iegReq;
-                        if (iegReq.onupgradeneeded) iegReq.onupgradeneeded.apply(this, arguments);
+                        ev.target = ev.currentTarget = iegReq;
+                        iegReq.dispatchEvent(ev);
                     }
                     req.onsuccess = function(ev) {
                         var db = req.result;
                         db._iegapmeta = { stores: {} }; // Until we have loaded the correct value, we need db.transaction() to work.
-                        var trans = db.transaction(["$iegapmeta"], 'readonly');
-                        var req2 = trans.objectStore("$iegapmeta").get(1);
-                        req2.onerror = error;
-                        req2.onsuccess = function() {
-                            db._iegapmeta = req2.result;
-                            success(ev, db);
+                        try {
+                            var trans = db.transaction(["$iegapmeta"], 'readonly');
+                            var req2 = trans.objectStore("$iegapmeta").get(1);
+                            req2.onerror = error;
+                            req2.onsuccess = function() {
+                                db._iegapmeta = req2.result;
+                                success(ev, db);
+                            }
+                        } catch (e) {
+                            error(ev, e);
                         }
                     }
                 });
@@ -605,8 +667,14 @@
                 /// <param name="props" value="{unique: true, multiEntry: true}"></param>
                 var db = store.transaction.db;
                 var idxStoreName = "$iegap-" + store.name + "-" + name;
-                var idxStore = db.createObjectStore(idxStoreName, { autoIncrement: true });
                 var meta = getMeta(db);
+                if (props.multiEntry && Array.isArray(keyPath)) {
+                    // IDB spec require us to throw DOMException.INVALID_ACCESS_ERR
+                    db.createObjectStore("dummy", { keyPath: "", autoIncrement: true }); // Will throw DOMException.INVALID_ACCESS_ERR
+                    throw "invalid access"; // fallback.
+                }
+                var idxStore = db.createObjectStore(idxStoreName, { autoIncrement: true });
+
                 var storeMeta = meta.stores[store.name] || (meta.stores[store.name] = {indexes: {}, metaStores: [] });
                 storeMeta.indexes[name] = {
                     name: name,
@@ -624,9 +692,9 @@
                 return new IEGAPIndex(keyIndex, store, name, keyPath, props.multiEntry);
             }
 
-            return function(name, keyPath, props) {
-                if (Array.isArray(keyPath) || props.multiEntry)
-                    return createIndex(this, name, keyPath, props);
+            return function (name, keyPath, props) {
+                if (Array.isArray(keyPath) || (props && props.multiEntry))
+                    return createIndex(this, name, keyPath, props || {});
                 return origFunc.apply(this, arguments);
             }
         });
@@ -651,18 +719,36 @@
                 var store = this;
                 return new IEGAPRequest(this, this.transaction, function(success, error) {
                     var indexes = Object.keys(meta.indexes);
-                    var addEvent = null;
-                    var primKey;
-                    addReq.onerror = error;
+                    var addEvent = null, indexAddFinished = false;
+                    var primKey = key || (store.keyPath && getByKeyPath(value, store.keyPath));
+                    addReq.onerror = function(e) {
+                        if (!error(e)) {
+                            // error listener stopped propagation (transaction will commit)
+                            // need to manually rollback added keys:
+                            if (primKey) rollbackIndexKeysAdds();
+                            e.stopPropagation();
+                            e.preventDefault();
+                            return false;
+                        }
+                    }
+                    if (primKey) addIndexKeys(); // Caller provided primKey - we can start adding indexes at once! No need waiting for onsuccess.
                     addReq.onsuccess = function (ev) {
                         addEvent = ev;
-                        primKey = addReq.result;
-                        addIndexKeys();
+                        if (primKey) { // Caller provided the primkey
+                            checksuccess();
+                        } else {
+                            primKey = addReq.result;
+                            addIndexKeys();
+                        }
+                    }
+
+                    function checksuccess() {
+                        if (indexAddFinished && addEvent) success(addEvent, addReq.result);
                     }
 
                     function addIndexKeys() {
                         var nRequests = indexes.length;
-                        if (nRequests === 0) return success(addEvent, primKey);
+                        if (nRequests === 0) return checksuccess();
                         indexes.forEach(function (indexName) {
                             var indexSpec = meta.indexes[indexName];
                             var idxStore = store.transaction.objectStore(indexSpec.idxStoreName);
@@ -676,8 +762,16 @@
                         });
 
                         function checkComplete() {
-                            if (--nRequests === 0) success(addEvent, primKey);
+                            if (--nRequests === 0) checksuccess();
                         }
+                    }
+
+                    function rollbackIndexKeysAdds() {
+                        indexes.forEach(function (indexName) {
+                            var indexSpec = meta.indexes[indexName];
+                            var idxStore = store.transaction.objectStore(indexSpec.idxStoreName);
+                            bulkDelete(idxStore.index("fk"), key, function() {});
+                        });
                     }
                 });
             }
