@@ -21,7 +21,7 @@ The polyfill is tested against the W3C web-platform-test suite that applies to I
 
 Tested with Dexie.js
 --------------------
-THe polyfill is tested with the unit tests of Dexie.js. (Currently with one issue: See  https://github.com/dfahlander/compound-and-multientry-for-ie/issues/1)
+The polyfill is tested with the unit tests of Dexie.js. (Currently with one issue: See  https://github.com/dfahlander/compound-and-multientry-for-ie/issues/1)
 
 
 Please help me test and simplify, optimize or extend this polyfill.
