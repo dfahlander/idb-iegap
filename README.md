@@ -1,4 +1,4 @@
 compound-and-multientry-for-ie
 ==============================
 
-Polyfill that makes IE10 / IE11 support the full IndexedDB specification by implementing compound and multiEntry index handling
+Polyfill that makes IE10 / IE11 almost support the more complete IndexedDB specification by implementing compound and multiEntry index handling.
