@@ -1,10 +1,13 @@
-﻿(function (idb, undefined) {
+﻿if (navigator.userAgent.indexOf("Trident/6.0") !== -1 || navigator.userAgent.indexOf("Trident/7.0" !== -1)) (function (idb, undefined) {
     /*
      * Gaps if IE10 and IE11:
-     *      * The lack of compound indexes
-     *      * The lack of support for multivalued keys
+     *      * The lack of support for compound indexes
+     *      * The lack of support for compound primary keys
+     *      * The lack of support for multiEntry indexes
      *
      * Where to inject?
+     * 
+     *      Everything that is implemented is marked with a "V" below:
      * 
      *      V IDBObjectStore.createIndex(name, [keyPath1, keypath2], { unique: true/false, multiEntry: true });
      *          What to do?
@@ -12,10 +15,9 @@
      *                 If multiEntry is true, create a new table ($iegap-<table>-<indexName> with autoinc, key "key" and value "primKey" of this table.
      *              2) Dont create the real index but store the index in localStorage key ("$iegap-<table>")
      *                  { indexes: [{name: "", keyPath, ...
-     *      * IDBObjectStore.deleteIndex()
-     *          1) Return the compound result of real indexNames and the ones in $iegap-<table>-indexes
+     *      V IDBObjectStore.deleteIndex()
      *      V IDBObjectStore.index("name")
-     *          * If the name corresponds to a special index, return a fake IDBIndex with its own version of openCursor()
+     *          V If the name corresponds to a special index, return a fake IDBIndex with its own version of openCursor()
      *      V IDBObjectStore.add():
      *          V If we have compound indexes, make sure to also add an item in its table if add was successful. Return a fake request that resolves when both requests are resolved
                   V Ignore but log error events occurring when adding index keys
@@ -28,22 +30,21 @@
      *      V IEGAPIndex.openKeyCursor():
      *          V compound: Iterate the own table, use a fake cursor object to point out correct primary key
      *      V IEGAPIndex.openCursor():
-     *          * compound: Iterate the own table, use a fake cursor object to point out correct primary key and value
-     *          * IEGapCursor.delete(): delete the object itself along with the index objects pointing to it. HOW WILL IE REACT WHEN SAWING OF ITS OWN BRANCH IN AN ITERATION. We might have to restart the query with another upperBound/lowerBound request.
-     *          * IEGapCursor.update(): Do a put() on the object itself. WHAT HAPPENS IF PUT/DELETE results in deleting next-coming iterations? We might have to restart the quer with another upperBound/lowerBound request.
-     *          * Support nextunique and prevunique by just using it on the index store.
+     *          V compound: Iterate the own table, use a fake cursor object to point out correct primary key and value
+     *          V IEGapCursor.delete(): delete the object itself along with the index objects pointing to it. HOW WILL IE REACT WHEN SAWING OF ITS OWN BRANCH IN AN ITERATION. We might have to restart the query with another upperBound/lowerBound request.
+     *          V IEGapCursor.update(): Do a put() on the object itself. WHAT HAPPENS IF PUT/DELETE results in deleting next-coming iterations? We might have to restart the quer with another upperBound/lowerBound request.
+     *          V Support nextunique and prevunique by just using it on the index store.
      *      V IDBDatabase.transaction(): Make sure to include all meta-tables for included object stores.
-     *      * IDBDatabase.deleteObjectStore()
-     *      * Detect IE10/IE11.
+     *      V IDBDatabase.deleteObjectStore(): Delete the meta-indexe object stores and update the meta-table.
+     *      V Detect IE10/IE11.
      *
      *  Over-course:
-     *      V IDBObjectStore.indexNames: Filter away those names that contain metadata
+     *      V IDBObjectStore.indexNames: Return the compound result of real indexNames and the ones in $iegap-<table>-indexes
      *      V IDBDatabase.objectStoreNames: Filter away those names that contain metadata
      *      V indexedDB.open(): extend the returned request and override onupgradeneeded so that main meta-table is created
      *      V                            "                               onsuccess so that the main meta-table is read into a var stored onto db.
-     *      * IDBTransaction.objectStore(): Populate the "autoIncrement" property onto returned objectStore. Need to have that stored if so.
+     *      V IDBTransaction.objectStore(): Populate the "autoIncrement" property onto returned objectStore. Need to have that stored if so.
      *      * readyState in IEGAPRequest
-     *      * currentTarget in IEGAPRequest (other props as well?)
      */
     function extend(obj, extension) {
         if (typeof extension !== 'object') extension = extension(); // Allow to supply a function returning the extension. Useful for simplifying private scopes.
@@ -139,21 +140,24 @@
         }
     }
 
-    function addCompoundIndexKey(idxStore, indexSpec, value, primKey, onfinally) {
+    function addCompoundIndexKey(idxStore, indexSpec, value, primKey, rollbacks, onfinally) {
         /// <param name="idxStore" type="IDBObjectStore">The object store for meta-indexes</param>
         try {
             var idxKeys = getByKeyPath(value, indexSpec.keyPath);
             if (idxKeys === undefined) return onfinally(); // no key to add index for
             var req = idxStore.add({ fk: primKey, k: compoundToString(idxKeys) });
             req.onerror = ignore("add compound index", onfinally);
-            req.onsuccess = onfinally;
+            req.onsuccess = function (ev) {
+                if (rollbacks) rollbacks.push({store: idxStore, del: true, pk: ev.target.result});
+                onfinally();
+            };
         } catch (ex) {
             console.log("IEGap polyfill exception when adding compound index key");
             onfinally();
         }
     }
 
-    function addMultiEntryIndexKeys(idxStore, indexSpec, value, primKey, onfinally) {
+    function addMultiEntryIndexKeys(idxStore, indexSpec, value, primKey, rollbacks, onfinally) {
         /// <param name="idxStore" type="IDBObjectStore">The object store for meta-indexes</param>
         try {
             var idxKeys = getByKeyPath(value, indexSpec.keyPath);
@@ -162,13 +166,19 @@
                 // the result of evaluating the index's key path doesn't yield an Array
                 var req = idxStore.add({ fk: primKey, k: idxKeys });
                 req.onerror = ignore("add index", onfinally);
-                req.onsuccess = onfinally;
+                req.onsuccess = function(ev) {
+                    if (rollbacks) rollbacks.push({store: idxStore, del: true, pk: ev.target.result});
+                    onfinally();
+                }
             } else {
                 // the result of evaluating the index's key path yields an Array
                 idxKeys.forEach(function(idxKey) {
-                    var req = idxStore.add({ fk: primKey, k: idxKey });
-                    req.onerror = ignore(function() { return "add multiEntry index " + idxKey + " for " + indexSpec.storeName + "." + indexSpec.keyPath ; }, checkComplete);
-                    req.onsuccess = checkComplete;
+                    var req2 = idxStore.add({ fk: primKey, k: idxKey });
+                    req2.onerror = ignore(function() { return "add multiEntry index " + idxKey + " for " + indexSpec.storeName + "." + indexSpec.keyPath ; }, checkComplete);
+                    req2.onsuccess = function(ev) {
+                        if (rollbacks) rollbacks.push({ store: idxStore, del: true, pk: ev.target.result });
+                        checkComplete();
+                    }
                 });
 
                 var nRequests = idxKeys.length;
@@ -208,6 +218,24 @@
             }
         }
     }
+
+    function bulk(operations, cb, log) {
+        /// <summary>
+        ///     Execute given array of operations and the call given callback
+        /// </summary>
+        /// <param name="operations" value="[{store: IDBObjectStore.prototype, del:false, pk: null, obj: null}]">Operations to execute</param>
+        /// <param name="cb" type="Function"></param>
+        var nRequests = operations.length;
+        operations.forEach(function (item) {
+            var req = (item.del ? item.store.delete(item.pk) : (item.pk ? item.store.add (item.obj, item.pk) : item.store.add (item.obj)));
+            req.onerror = ignore(log || "executing bulk", checkComplete);
+            req.onsuccess = checkComplete;
+        });
+        function checkComplete() {
+            if (--nRequests === 0 && cb) cb();
+        }
+    }
+
 
     //
     // Constants and imports
@@ -325,7 +353,7 @@
 
     function getMeta(db) {
         /// <param name="db" type="IDBDatabase"></param>
-        /// <returns value="{stores: {storeName: {metaStores: [], indexes: {indexName: {name:'',keyPath:null,multiEntry:false,unique:false,compound:false,idxStoreName:'',storeName:''}}}}}"></returns>
+        /// <returns value="{stores: {storeName: {metaStores: [], indexes: {indexName: {name:'',keyPath:null,multiEntry:false,unique:false,compound:false,idxStoreName:'',storeName:''}}, compound: false, keyPath: ['a','b.c']}}}"></returns>
         return db._iegapmeta;
     }
     function setMeta(db, transaction, value) {
@@ -333,6 +361,17 @@
         /// <param name="transaction" type="IDBTransaction"></param>
         db._iegapmeta = value;
         transaction.objectStore('$iegapmeta').put(value, 1);
+    }
+
+    function parseKeyParam(key) {
+        if (Array.isArray(key)) return compoundToString(key);
+        if (key instanceof IEGAPKeyRange)
+            return IDBKeyRange.bound(
+                Array.isArray(key.lower) ? compoundToString(key.lower) : key.lower,
+                Array.isArray(key.upper) ? compoundToString(key.upper) : key.upper,
+                !!key.lowerOpen,
+                !!key.upperOpen);
+        return key;
     }
 
     function IEGAPIndex(idbIndex, idbStore, name, keyPath, multiEntry) {
@@ -352,7 +391,8 @@
             /// <param name="range" type="IDBKeyRange"></param>
             /// <param name="dir" type="String"></param>
             return new IEGAPRequest(iegIndex, iegIndex.objectStore.transaction, function (success, error) {
-                var compound = Array.isArray(iegIndex.keyPath);
+                var compound = iegIndex._compound,
+                    compoundPrimKey = Array.isArray(iegIndex.objectStore.keyPath);
                 if (compound && Array.isArray(range)) range = new IEGAPKeyRange(range, range);
                 var idbRange = compound && range ?
                     IDBKeyRange.bound(compoundToString(range.lower), compoundToString(range.upper), range.lowerOpen, range.upperOpen) :
@@ -367,8 +407,10 @@
                             var getreq = iegIndex._store.get(cursor.value.fk);
                             getreq.onerror = error;
                             getreq.onsuccess = function () {
-                                var key = compound ? getByKeyPath(getreq.result, iegIndex.keyPath) : cursor.key;
-                                success(ev, new IEGAPCursor(cursor, dir, range, iegIndex, key, getreq.result));
+                                if (!getreq.result) return cursor.continue(); // An index is about to be deleted but it hasnt happened yet.
+                                var key = compound ? stringToCompound(cursor.key) : cursor.key;
+                                var primKey = compoundPrimKey ? stringToCompound(cursor.value.fk) : cursor.value.fk;
+                                success(ev, new IEGAPCursor(cursor, iegIndex, iegIndex.objectStore, primKey, key, getreq.result));
                             }
                         } else {
                             success(ev, null);
@@ -378,19 +420,21 @@
                     req.onsuccess = function(ev) {
                         var cursor = ev.target.result;
                         var key = compound ? stringToCompound(cursor.key) : cursor.key;
-                        success(ev, cursor && new IEGAPCursor(cursor, dir, range, key, iegIndex));
+                        var primKey = compoundPrimKey ? stringToCompound(cursor.value.fk) : cursor.value.fk;
+                        success(ev, cursor && new IEGAPCursor(cursor, iegIndex, iegIndex.objectStore, primKey, key));
                     }
                 }
             });
         }
 
         return {
-            count: function(key) {
-                return key === undefined ? this._idx.count() : this._idx.count(key);
+            count: function (key) {
+                if (arguments.length > 0) arguments[0] = parseKeyParam(key);
+                return this._idx.count.apply(this._idx, arguments);
             },
             get: function(key) {
                 var thiz = this;
-                var req = this._idx.get(key);
+                var req = this._idx.get(parseKeyParam(key));
                 return new IEGAPRequest(this, this.objectStore.transaction, function(success, error) {
                     // First request the meta-store for this index
                     req.onsuccess = function(ev) {
@@ -413,7 +457,7 @@
             },
             getKey: function(key) {
                 var thiz = this;
-                var req = this._idx.get(key);
+                var req = this._idx.get(parseKeyParam(key));
                 return new IEGAPRequest(this, this.objectStore.transaction, function (success, error) {
                     req.onsuccess = function (ev) {
                         var res = ev.target.result;
@@ -431,17 +475,13 @@
         };
     });
 
-    function IEGAPCursor(idbCursor, dir, range, iegapIndex, key, value) {
-        /// <param name="idbCursor"></param>
-        /// <param name="dir"></param>
-        /// <param name="range"></param>
-        /// <param name="iegapIndex" type="IEGAPIndex"></param>
-        /// <param name="value"></param>
+    function IEGAPCursor(idbCursor, source, store, primaryKey, key, value) {
         this._cursor = idbCursor;
-        this.direction = dir;
+        this._store = store;
+        this.direction = idbCursor.direction;
         this.key = key;
-        this.primaryKey = idbCursor.value.fk;
-        this.source = iegapIndex;
+        this.primaryKey = primaryKey;
+        this.source = source;
         if (arguments.length >= 6) this.value = value;
     }
 
@@ -454,10 +494,10 @@
                 /// <param name="key" optional="true"></param>
                 if (!key) return this._cursor.continue();
                 if (Array.isArray(key)) return this._cursor.continue(compoundToString(key));
-                this._cursor.continue(key);
+                return this._cursor.continue(key);
             },
             "delete": function () {
-                return this.source.objectStore.delete(this.primaryKey);// Will automatically delete and iegap index items as well.
+                return this._store.delete(this.primaryKey);// Will automatically delete and iegap index items as well.
                 // req.target will be the object store and not the cursor. Let it be so for now.
                 // TODO: Låtsas som det regnar och fortsätt här. Testa sedan vad som händer om man deletar
                 // ett objekt som resulterar i att en massa multiValue indexes deletas och därmed att
@@ -467,7 +507,7 @@
             update: function(newValue) {
                 // Samma eventuella problem här som med delete(). Frågan är var ansvaret ligger för att inte fortsätta jobba med 
                 // en collection som håller på att manipuleras. API usern eller IDB?
-                return this.source.objectStore.put(this.primaryKey, newValue);
+                return this._store.put(this.primaryKey, newValue);
             }
         }
     });
@@ -577,6 +617,8 @@
 
         var getObjectStoreNames = Object.getOwnPropertyDescriptor(IDBDatabase.prototype, "objectStoreNames").get;
         //var getIndexNames = Object.getOwnPropertyDescriptor(IDBObjectStore.prototype, "indexNames").get;
+        var deleteObjectStore = IDBDatabase.prototype.deleteObjectStore;
+        var createObjectStore = IDBDatabase.prototype.createObjectStore;
 
         initPowTable();
 
@@ -592,9 +634,10 @@
                     req.onupgradeneeded = function (ev) {
                         iegReq.transaction = req.transaction;
                         var db = (iegReq.result = req.result);
+                        db._upgradeTransaction = req.transaction; // Needed in IDBDatabase.prototype.deleteObjectStore(). Save to set like this because during upgrade transaction, no other transactions may live concurrently.
                         db._iegapmeta = { stores: {} };
                         if (!getObjectStoreNames.apply(db).contains("$iegapmeta")) {
-                            var store = db.createObjectStore("$iegapmeta");
+                            var store = createObjectStore.call(db, "$iegapmeta");
                             store.add(db._iegapmeta, 1);
                         }
                         ev.target = ev.currentTarget = iegReq;
@@ -602,6 +645,7 @@
                     }
                     req.onsuccess = function(ev) {
                         var db = req.result;
+                        delete db._upgradeTransaction;
                         db._iegapmeta = { stores: {} }; // Until we have loaded the correct value, we need db.transaction() to work.
                         try {
                             var trans = db.transaction(["$iegapmeta"], 'readonly');
@@ -633,7 +677,7 @@
         IDBKeyRange.lowerBound = override(IDBKeyRange.lowerBound, function(orig) {
             return function lowerBound(bound, open) {
                 if (!Array.isArray(bound)) return orig.apply(this, arguments);
-                return new IEGAPKeyRange(bound, null, open);
+                return new IEGAPKeyRange(bound, null, open, null);
             }
         });
 
@@ -654,6 +698,49 @@
         //
         // Inject into window.IDBObjectStore
         //
+        IDBObjectStore.prototype.count = override(IDBObjectStore.prototype.count, function(orig) {
+            return function (key) {
+                if (arguments.length > 0) arguments[0] = parseKeyParam(key);
+                return orig.apply(this, arguments);
+            }
+        });
+
+        IDBObjectStore.prototype.get = override(IDBObjectStore.prototype.get, function(orig) {
+            return function(key) {
+                if (arguments.length > 0) arguments[0] = parseKeyParam(key);
+                return orig.apply(this, arguments);
+            }
+        });
+
+        IDBObjectStore.prototype.openCursor = override(IDBObjectStore.prototype.openCursor, function(orig) {
+            return function (range, dir) {
+                /// <param name="range" type="IDBKeyRange"></param>
+                /// <param name="dir" type="String"></param>
+                var meta = this.transaction.db._iegapmeta.stores[this.name];
+                if (!meta || !meta.compound) return orig.apply(this, arguments);
+                if (Array.isArray(range)) range = new IEGAPKeyRange(range, range);
+                if (range && !(range instanceof IEGAPKeyRange)) throw new RangeError("Primary key is compound but given range is not.");
+                var idbRange = range ?
+                    IDBKeyRange.bound(compoundToString(range.lower), compoundToString(range.upper), range.lowerOpen, range.upperOpen) :
+                    range;
+                
+                var req = orig.call(this, idbRange, dir);
+                var store = this;
+                return new IEGAPRequest(this, this.transaction, function(success, error) {
+                    req.onerror = error;
+                    req.onsuccess = function (ev) {
+                        var cursor = ev.target.result;
+                        var key = stringToCompound(cursor.key);
+                        if (cursor) {
+                            var iegapCursor = new IEGAPCursor(cursor, store, store, key, key, cursor.value);
+                            success(ev, iegapCursor);
+                        } else {
+                            success(ev, null);
+                        }
+                    }
+                });
+            }
+        });
 
         IDBObjectStore.prototype.createIndex = override(IDBObjectStore.prototype.createIndex, function (origFunc) {
 
@@ -667,13 +754,13 @@
                 /// <param name="props" value="{unique: true, multiEntry: true}"></param>
                 var db = store.transaction.db;
                 var idxStoreName = "$iegap-" + store.name + "-" + name;
-                var meta = getMeta(db);
+                var meta = db._iegapmeta;
                 if (props.multiEntry && Array.isArray(keyPath)) {
                     // IDB spec require us to throw DOMException.INVALID_ACCESS_ERR
-                    db.createObjectStore("dummy", { keyPath: "", autoIncrement: true }); // Will throw DOMException.INVALID_ACCESS_ERR
+                    createObjectStore.call(db, "dummy", { keyPath: "", autoIncrement: true }); // Will throw DOMException.INVALID_ACCESS_ERR
                     throw "invalid access"; // fallback.
                 }
-                var idxStore = db.createObjectStore(idxStoreName, { autoIncrement: true });
+                var idxStore = createObjectStore.call(db, idxStoreName, { autoIncrement: true });
 
                 var storeMeta = meta.stores[store.name] || (meta.stores[store.name] = {indexes: {}, metaStores: [] });
                 storeMeta.indexes[name] = {
@@ -699,6 +786,20 @@
             }
         });
 
+        IDBObjectStore.prototype.deleteIndex = override(IDBObjectStore.prototype.deleteIndex, function(origFunc) {
+            return function(name) {
+                var db = this.transaction.db;
+                var meta = db._iegapmeta;
+                var storeMeta = meta.stores[this.name];
+                if (!storeMeta) return origFunc.apply(this, arguments);
+                var indexMeta = storeMeta.indexes[name];
+                if (!indexMeta) return origFunc.apply(this, arguments);
+                deleteObjectStore.call(db, indexMeta.idxStoreName);
+                delete storeMeta.indexes[name];
+                setMeta(db, this.transaction, meta);
+            }
+        });
+
         IDBObjectStore.prototype.index = override(IDBObjectStore.prototype.index, function(origFunc) {
 
             return function (indexName) {
@@ -710,68 +811,87 @@
                     origFunc.apply(this, arguments);
             };
         });
-
+        
         IDBObjectStore.prototype.add = override(IDBObjectStore.prototype.add, function (origFunc) {
             return function(value, key) {
-                var addReq = origFunc.apply(this, arguments);
-                var meta = getMeta(this.transaction.db).stores[this.name];
-                if (!meta) return addReq;
+                var meta = this.transaction.db._iegapmeta.stores[this.name];
+                if (!meta) return origFunc.apply(this, arguments);
+                var addReq;
+                if (meta.compound) {
+                    // Compound primary key
+                    // Key must not be provided when having inbound keys (compound is inbound)
+                    if (key) return this.add(null); // Trigger DOMException(DataError)!
+                    key = compoundToString(getByKeyPath(value, meta.keyPath));
+                    addReq = origFunc.call(this, value, key);
+                } else {
+                    addReq = origFunc.apply(this, arguments);
+                }
+                var indexes = Object.keys(meta.indexes);
+                if (indexes.length === 0) return addReq; // No indexes to deal with
                 var store = this;
                 return new IEGAPRequest(this, this.transaction, function(success, error) {
-                    var indexes = Object.keys(meta.indexes);
-                    var addEvent = null, indexAddFinished = false;
+                    var addEvent = null, errorEvent = null, indexAddFinished = false, rollbacks = [];
                     var primKey = key || (store.keyPath && getByKeyPath(value, store.keyPath));
-                    addReq.onerror = function(e) {
-                        if (!error(e)) {
-                            // error listener stopped propagation (transaction will commit)
-                            // need to manually rollback added keys:
-                            if (primKey) rollbackIndexKeysAdds();
-                            e.stopPropagation();
-                            e.preventDefault();
-                            return false;
-                        }
-                    }
-                    if (primKey) addIndexKeys(); // Caller provided primKey - we can start adding indexes at once! No need waiting for onsuccess.
-                    addReq.onsuccess = function (ev) {
-                        addEvent = ev;
-                        if (primKey) { // Caller provided the primkey
-                            checksuccess();
-                        } else {
+                    if (!primKey) {
+                        addReq.onerror = error;
+                        addReq.onsuccess = function(ev) {
+                            addEvent = ev;
                             primKey = addReq.result;
                             addIndexKeys();
                         }
+                    } else {
+                        // Caller provided primKey - we can start adding indexes at once! No need waiting for onsuccess. However, this means we may need to rollback our stuff...
+                        // So, why do it in such a complex way? Because otherwise we fail on a W3C web-platform-test where an item is added and then expected its index to be there the line after.
+                        addIndexKeys();
+                        addReq.onerror = function(ev) {
+                            errorEvent = ev;
+                            ev.preventDefault(); // Dont abort transaction quite yet. First roll-back our added indexes, then when done, call the real error eventhandler and check if it wants to preventDefault or not.
+                            checkFinally();
+                        }
+                        addReq.onsuccess = function(ev) {
+                            addEvent = ev;
+                            checkFinally();
+                        }
                     }
 
-                    function checksuccess() {
-                        if (indexAddFinished && addEvent) success(addEvent, addReq.result);
+                    function checkFinally() {
+                        if (indexAddFinished && (addEvent || errorEvent))
+                            if (errorEvent) {
+                                var defaultPrevented = false;
+                                errorEvent.preventDefault = function () { defaultPrevented = true; };
+                                error(errorEvent);
+                                if (!defaultPrevented) store.transaction.abort(); // We prevented default in the first place. Now we must manually abort when having called the event handler
+                            } else
+                                success(addEvent, meta.compound ? stringToCompound(addReq.result) : addReq.result);
                     }
 
                     function addIndexKeys() {
                         var nRequests = indexes.length;
-                        if (nRequests === 0) return checksuccess();
                         indexes.forEach(function (indexName) {
                             var indexSpec = meta.indexes[indexName];
                             var idxStore = store.transaction.objectStore(indexSpec.idxStoreName);
                             if (indexSpec.multiEntry) {
-                                addMultiEntryIndexKeys(idxStore, indexSpec, value, primKey, checkComplete);
+                                addMultiEntryIndexKeys(idxStore, indexSpec, value, primKey, rollbacks, checkComplete);
                             } else if (indexSpec.compound) {
-                                addCompoundIndexKey(idxStore, indexSpec, value, primKey, checkComplete);
+                                addCompoundIndexKey(idxStore, indexSpec, value, primKey, rollbacks, checkComplete);
                             } else {
                                 throw "IEGap assert error";
                             }
                         });
 
                         function checkComplete() {
-                            if (--nRequests === 0) checksuccess();
+                            if (--nRequests === 0) {
+                                if (!errorEvent) {
+                                    indexAddFinished = true;
+                                    checkFinally();
+                                } else {
+                                    bulk(rollbacks, function() {
+                                        indexAddFinished = true;
+                                        checkFinally();
+                                    }, "rolling back index additions");
+                                }
+                            }
                         }
-                    }
-
-                    function rollbackIndexKeysAdds() {
-                        indexes.forEach(function (indexName) {
-                            var indexSpec = meta.indexes[indexName];
-                            var idxStore = store.transaction.objectStore(indexSpec.idxStoreName);
-                            bulkDelete(idxStore.index("fk"), key, function() {});
-                        });
                     }
                 });
             }
@@ -779,12 +899,22 @@
 
         IDBObjectStore.prototype.put = override(IDBObjectStore.prototype.put, function (origFunc) {
             return function (value, key) {
-                var putReq = origFunc.apply(this, arguments);
-                var meta = getMeta(this.transaction.db).stores[this.name];
-                if (!meta) return putReq;
+                var meta = this.transaction.db._iegapmeta.stores[this.name];
+                if (!meta) return origFunc.apply(this, arguments);
+                var putReq;
+                if (meta.compound) {
+                    // Compound primary key
+                    // Key must not be provided when having inbound keys (compound is inbound)
+                    if (key) return this.add(null); // Trigger DOMException(DataError)!
+                    key = compoundToString(getByKeyPath(value, meta.keyPath));
+                    putReq = origFunc.call(this, value, key);
+                } else {
+                    putReq = origFunc.apply(this, arguments);
+                }
+                var indexes = Object.keys(meta.indexes);
+                if (indexes.length === 0) return putReq;
                 var store = this;
                 return new IEGAPRequest(this, this.transaction, function (success, error) {
-                    var indexes = Object.keys(meta.indexes);
                     var putEvent = null;
                     var primKey;
                     putReq.onerror = error;
@@ -796,22 +926,21 @@
 
                     function replaceIndexKeys() {
                         var nRequests = indexes.length * 2;
-                        if (nRequests === 0) return success(putEvent, primKey);
                         indexes.forEach(function(indexName) {
                             var indexSpec = meta.indexes[indexName];
                             var idxStore = store.transaction.objectStore(indexSpec.idxStoreName);
                             bulkDelete(idxStore.index("fk"), primKey, checkComplete);
                             if (indexSpec.multiEntry) {
-                                addMultiEntryIndexKeys(idxStore, indexSpec, value, primKey, checkComplete);
+                                addMultiEntryIndexKeys(idxStore, indexSpec, value, primKey, null, checkComplete);
                             } else if (indexSpec.compound) {
-                                addCompoundIndexKey(idxStore, indexSpec, value, primKey, checkComplete);
+                                addCompoundIndexKey(idxStore, indexSpec, value, primKey, null, checkComplete);
                             } else {
                                 throw "IEGap assert error";
                             }
                         });
 
                         function checkComplete() {
-                            if (--nRequests === 0) success(putEvent, primKey);
+                            if (--nRequests === 0) success(putEvent, meta.compound ? stringToCompound(primKey) : primKey);
                         }
                     }
                 });
@@ -820,12 +949,18 @@
 
         IDBObjectStore.prototype.delete = override(IDBObjectStore.prototype.delete, function (origFunc) {
             return function (key) {
-                var delReq = origFunc.apply(this, arguments);
-                var meta = getMeta(this.transaction.db).stores[this.name];
-                if (!meta) return delReq;
+                var meta = this.transaction.db._iegapmeta.stores[this.name];
+                if (!meta) return origFunc.apply(this, arguments);
+                if (meta.compound) {
+                    // Compound primary key
+                    key = compoundToString(key);
+                }
+                // TODO: Handle compound primary key (see put/add)
+                var delReq = origFunc.call(this, key);
+                var indexes = Object.keys(meta.indexes);
+                if (indexes.length == 0) return delReq;
                 var store = this;
                 return new IEGAPRequest(this, this.transaction, function (success, error) {
-                    var indexes = Object.keys(meta.indexes);
                     var delEvent = null;
                     delReq.onerror = error;
                     delReq.onsuccess = function(ev) {
@@ -835,7 +970,6 @@
 
                     function deleteIndexKeys() {
                         var nRequests = indexes.length;
-                        if (nRequests === 0) return success(delEvent);
                         indexes.forEach(function (indexName) {
                             var indexSpec = meta.indexes[indexName];
                             var idxStore = store.transaction.objectStore(indexSpec.idxStoreName);
@@ -853,7 +987,7 @@
         IDBObjectStore.prototype.clear = override(IDBObjectStore.prototype.clear, function(origFunc) {
             return function() {
                 var clearReq = origFunc.apply(this, arguments);
-                var meta = getMeta(this.transaction.db).stores[this.name];
+                var meta = this.transaction.db._iegapmeta.stores[this.name];
                 if (!meta) return clearReq;
                 var store = this;
                 return new IEGAPRequest(this, this.transaction, function(success, error) {
@@ -894,6 +1028,22 @@
                         return new IEGAPStringList(rv);
                     }
                 }
+            },
+            autoIncrement: function(orig) {
+                return {
+                    get: function() {
+                        var meta = this.transaction.db._iegapmeta.stores[this.name];
+                        return meta ? meta.autoIncrement : orig.get.call(this);
+                    }
+                }
+            },
+            keyPath: function(orig) {
+                return {
+                    get: function () {
+                        var meta = this.transaction.db._iegapmeta.stores[this.name];
+                        return meta ? meta.keyPath : orig.get.call(this);
+                    }
+                }
             }
         });
 
@@ -905,7 +1055,7 @@
                 return {
                     value: function(storeNames, mode) {
                         storeNames = typeof storeNames == 'string' ? [storeNames] : [].slice.call(storeNames);
-                        var storesWithMeta = getMeta(this).stores;
+                        var storesWithMeta = this._iegapmeta.stores;
                         storeNames.forEach(function (name) {
                             var meta = storesWithMeta[name];
                             if (meta) storeNames = storeNames.concat(meta.metaStores);
@@ -922,6 +1072,53 @@
                                 return storeName.indexOf('$iegap') !== 0;
                             }
                         ));
+                    }
+                }
+            },
+            createObjectStore: function(origPropDescriptor) {
+                return {
+                    value: function (storeName, props) {
+                        /// <summary>
+                        ///   Hook into when object stores are create so that we
+                        ///   may support compound primary keys.
+                        /// </summary>
+                        /// <param name="storeName" type="String"></param>
+                        /// <param name="props" optional="true" value="{keyPath: [], autoIncrement: false}"></param>
+                        /// <returns type="IDBObjectStore"></returns>
+                        var rv, compound = false;
+                        if (!props || !Array.isArray(props.keyPath)) {
+                            rv = origPropDescriptor.value.apply(this, arguments);
+                        } else {
+                            compound = true;
+                            if (props.autoIncrement) throw new RangeError("Cannot autoincrement compound key");
+                            // Caller provided an array as keyPath. Need to polyfill:
+                            // Create the ObjectStore without inbound keyPath:
+                            rv = origPropDescriptor.value.call(this, storeName);
+                        }
+                        // Then, store the keyPath array in our meta-data:
+                        var meta = this._iegapmeta;
+                        var storeMeta = meta.stores[storeName] || (meta.stores[storeName] = { indexes: {}, metaStores: [] });
+                        storeMeta.keyPath = (props && props.keyPath) || null;
+                        storeMeta.compound = compound;
+                        storeMeta.autoIncrement = (props && props.autoIncrement) || false;
+                        setMeta(this, rv.transaction, meta);
+                        return rv;
+                    }
+                }
+            },
+            deleteObjectStore: function (origPropDescriptor) {
+                return {
+                    value: function (storeName) {
+                        origPropDescriptor.value.call(this, storeName);
+                        var meta = this._iegapmeta;
+                        var storeMeta = meta.stores[storeName];
+                        if (!storeMeta) return;
+                        storeMeta.metaStores.forEach(function(metaStoreName) {
+                            origPropDescriptor.value.call(this, metaStoreName);
+                        });
+                        delete meta.stores[storeName];
+                        if (!this._upgradeTransaction) throw "assert error"; // In case we're not in upgrade phase, first call to origPropDescriptor.value.call(storeName) would can thrown already.
+                        setMeta(this, this._upgradeTransaction, meta);
                     }
                 }
             }
