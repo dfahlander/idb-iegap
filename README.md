@@ -14,12 +14,12 @@ This polyfill makes IE10 / IE11 support the complete IndexedDB specification by 
 Compound Index
 --------------
 
-It is now possible to have an index compound by an array of keyPaths making it possible to do more efficient intersection (AND) operations. In the last commit, I also made support for using an array as keyPath for the ObjectStore itself (the primary key will is compound). This is specified in the IDB specification and tested in W3C web-platform-test suite. All other browsers supports this except IE.
+It is now possible to have an index compound by an array of keyPaths making it possible to do more efficient intersection (AND) operations. In the last commit, I also made support for using an array as keyPath for the ObjectStore itself (the primary key will is compound). This is specified in the IDB specification and tested in W3C web-platform-test suite.
 
 MultiEntry Index
 ----------------
 
-It is now possible to have a multiValued index - that is, letting a property of a persistant object be an array and automatically index each item in the array, so that it is possible to lookup the object based on any of the keys stored in its array-property. All other browsers supports this except IE.
+It is now possible to have a multiValued index - that is, letting a property of a persistant object be an array and automatically index each item in the array, so that it is possible to lookup the object based on any of the keys stored in its array-property.
 
 Tested against W3C web-platform-tests
 -------------------------------------
