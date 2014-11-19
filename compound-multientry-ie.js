@@ -1,4 +1,4 @@
-﻿if (navigator.userAgent.indexOf("Trident/6.0") !== -1 || navigator.userAgent.indexOf("Trident/7.0" !== -1)) (function (idb, undefined) {
+﻿if (navigator.userAgent.indexOf("Trident/6.0") !== -1 || navigator.userAgent.indexOf("Trident/7.0") !== -1) (function (idb, undefined) {
     /*
      * Gaps if IE10 and IE11:
      *      * The lack of support for compound indexes
@@ -955,7 +955,6 @@
                     // Compound primary key
                     key = compoundToString(key);
                 }
-                // TODO: Handle compound primary key (see put/add)
                 var delReq = origFunc.call(this, key);
                 var indexes = Object.keys(meta.indexes);
                 if (indexes.length == 0) return delReq;
