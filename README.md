@@ -1,4 +1,4 @@
-Compound and Multientry Indexes with IE10/11
+Compound and MultiEntry Indexes with IE10/11
 ============================================
 
 There's been some years since Internet Explorer launched their IndexedDB support. The IE version however, lacked the support for compound and multivalued indexes. Since summer 2014, all major browsers including the latest version of Safari support the IndexedDB specification. Now it's only IE that is the odd fellow that lacks the full specification.
