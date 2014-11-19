@@ -14,7 +14,8 @@ This polyfill makes IE10 / IE11 support the complete IndexedDB specification by 
 Installation
 ------------
 Download the source yourself, or use bower:
-bower install idb-iegap
+
+    bower install idb-iegap
 
 Compound Index
 --------------
