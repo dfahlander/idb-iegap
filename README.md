@@ -1,5 +1,5 @@
-compound-and-multientry-for-ie
-==============================
+Compound and Multientry Indexes with IE
+=======================================
 
 There's been some years since Internet Explorer launched their IndexedDB support. The IE version however, lacked the support for compound and multivalued indexes. Since summer 2014, all major browsers including the latest version of Safari support the IndexedDB specification. Now it's only IE that is the odd fellow that lacks the full specification.
 
@@ -10,6 +10,11 @@ There's been some years since Internet Explorer launched their IndexedDB support
 * Internet Explorer has it "almooooost", if it wasn't for that irritating multiEntry / compound index support!!!
 
 This polyfill makes IE10 / IE11 support the complete IndexedDB specification by implementing support for compound and multiEntry index as well as using compound primary keys.
+
+Installation
+------------
+Download the source yourself, or use bower:
+bower install idb-iegap
 
 Compound Index
 --------------
