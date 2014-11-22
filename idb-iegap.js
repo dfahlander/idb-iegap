@@ -365,12 +365,19 @@
 
     function parseKeyParam(key) {
         if (Array.isArray(key)) return compoundToString(key);
-        if (key instanceof IEGAPKeyRange)
+        if (key instanceof IEGAPKeyRange) {
+            var upper = Array.isArray(key.upper) ? compoundToString(key.upper) : key.upper,
+                lower = Array.isArray(key.lower) ? compoundToString(key.lower) : key.lower;
+            if (key.lower === null)
+                return IDBKeyRange.upperBound(upper, key.upperOpen);
+            if (key.upper === null)
+                return IDBKeyRange.lowerBound(lower, key.lowerOpen);
             return IDBKeyRange.bound(
-                Array.isArray(key.lower) ? compoundToString(key.lower) : key.lower,
-                Array.isArray(key.upper) ? compoundToString(key.upper) : key.upper,
+                lower,
+                upper,
                 !!key.lowerOpen,
                 !!key.upperOpen);
+        }
         return key;
     }
 
@@ -397,7 +404,8 @@
                 var idbRange = compound && range ?
                     IDBKeyRange.bound(compoundToString(range.lower), compoundToString(range.upper), range.lowerOpen, range.upperOpen) :
                     range;
-                
+
+                if (typeof idbRange === 'undefined') idbRange = null;
                 var req = iegIndex._idx.openCursor(idbRange, dir);
                 req.onerror = error;
                 if (includeValue) {
@@ -723,15 +731,15 @@
                 var idbRange = range ?
                     IDBKeyRange.bound(compoundToString(range.lower), compoundToString(range.upper), range.lowerOpen, range.upperOpen) :
                     range;
-                
-                var req = orig.call(this, idbRange, dir);
+                arguments[0] = idbRange;
+                var req = orig.apply(this, arguments);
                 var store = this;
                 return new IEGAPRequest(this, this.transaction, function(success, error) {
                     req.onerror = error;
                     req.onsuccess = function (ev) {
                         var cursor = ev.target.result;
-                        var key = stringToCompound(cursor.key);
                         if (cursor) {
+                            var key = stringToCompound(cursor.key);
                             var iegapCursor = new IEGAPCursor(cursor, store, store, key, key, cursor.value);
                             success(ev, iegapCursor);
                         } else {
