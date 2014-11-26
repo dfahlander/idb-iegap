@@ -638,7 +638,7 @@
                 var req = orig.apply(this, arguments);
                 return new IEGAPOpenRequest(this, null, function (success, error, iegReq) {
                     req.onerror = error;
-                    req.onblocked = iegReq.dispatchEvent;
+                    req.onblocked = function(ev) { iegReq.dispatchEvent(ev); };
                     req.onupgradeneeded = function (ev) {
                         iegReq.transaction = req.transaction;
                         var db = (iegReq.result = req.result);
