@@ -32,9 +32,9 @@ Tested against W3C web-platform-tests
 The polyfill is tested against the W3C web-platform-test suite that applies to IndexedDB and multi-entry and compund indexes. A fork of the W3C web-platform-test suite that includes this polyfill, can be run at: http://testidbiegap.dexie.org. The source of the fork is found here: https://github.com/dfahlander/web-platform-tests
 
 
-Tested with Dexie.js
+Tested with [Dexie.js](http://www.dexie.org)
 --------------------
-The polyfill is tested with the unit tests of Dexie.js.
+The polyfill is tested with the unit tests of [Dexie.js](http://www.dexie.org).
 
 
 Please help me test, bugfix, simplify, optimize and spread this polyfill.
