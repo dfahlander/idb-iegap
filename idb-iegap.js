@@ -835,7 +835,7 @@
                     addReq = origFunc.apply(this, arguments);
                 }
                 var indexes = Object.keys(meta.indexes);
-                if (indexes.length === 0) return addReq; // No indexes to deal with
+                if (!meta.compound && indexes.length === 0) return addReq; // No indexes to deal with
                 var store = this;
                 return new IEGAPRequest(this, this.transaction, function(success, error) {
                     var addEvent = null, errorEvent = null, indexAddFinished = false, rollbacks = [];
@@ -920,7 +920,7 @@
                     putReq = origFunc.apply(this, arguments);
                 }
                 var indexes = Object.keys(meta.indexes);
-                if (indexes.length === 0) return putReq;
+                if (!meta.compound && indexes.length === 0) return putReq;
                 var store = this;
                 return new IEGAPRequest(this, this.transaction, function (success, error) {
                     var putEvent = null;
