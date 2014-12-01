@@ -1,7 +1,7 @@
 Compound and MultiEntry Indexes with IE
 =======================================
 
-There's been some years since Internet Explorer launched their IndexedDB support. The IE version however, lacked the support for compound and multivalued indexes. Since summer 2014, all major browsers including the latest version of Safari support the IndexedDB specification. Now it's only IE that is the odd fellow that lacks the full specification.
+There's been some years since Internet Explorer launched their IndexedDB support. The IE version however, lacked the support for compound and multivalued indexes. Since summer 2014, all major browsers including the latest version of Safari support the IndexedDB specification, even though the Safari implementation isn't yet robust. Now it's only IE that is the odd fellow that lacks the support for compound and multiEntry indexes.
 
 * Chrome has it!
 * Firefox has it!
