@@ -7,7 +7,6 @@ There's been some years since Internet Explorer launched their IndexedDB support
 * Firefox has it!
 * Opera has it!
 * Internet Explorer has it "almooooost", if it wasn't for that irritating multiEntry / compound index support!!!
-* ...and Safari is getting it... with some brokeness though...
 
 This polyfill makes IE10 / IE11 support the complete IndexedDB specification by implementing support for compound and multiEntry index as well as using compound primary keys.
 
