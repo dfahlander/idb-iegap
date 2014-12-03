@@ -1,0 +1,62 @@
+﻿<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+    <title>IDB-IEGAP Migration Phase 1</title>
+    <script src="../bower_components/dexie/dist/latest/Dexie.min.js"></script>
+</head>
+<body>
+    <h1>IDB-IEGAP Migration Phase 1</h1>
+    <p>
+        In this step, the polyfill is NOT loaded and we create
+        a database in plain IE indexedDB scenario.
+        The purpose is to verify that we at the next page is able
+        to add the polyfill and still be able to use the existing database as
+        well as upgrading it to start utilizing compound and multiValue indexes.
+    </p>
+    <p>
+        In phase 2, we will include the polyfill and migrate the existing database.
+    </p>
+    <p>
+        <textarea id="output" style="width:100%; height: 150px;"></textarea>
+    </p>
+    <p>
+        <a href="migration-phase-2.html">Continue to phase 2 --&gt;</a>
+    </p>
+    <script>
+
+        function log(txt) {
+            document.getElementById('output').value += txt + "\n";
+        }
+
+        // Define Database:
+        var db = new Dexie("iegap-migration-test");
+        db.version(1).stores({ people: "++id,name" });
+        db.on.populate.subscribe(function () {
+            log("Populating database");
+            db.people.add({ name: "My first person" });
+            db.people.add({ name: "My second person" });
+        });
+        db.on.blocked.subscribe(function () {
+            log("Database '" + db.name + "' blocked. Please close other windows holding it!")
+        });
+
+        log("Deleting database if it exists already");
+        db.delete().then(function () {
+            log("Creating database");
+            return db.open();
+        }).then(function () {
+            log("Querying database");
+            return db.people.toArray();
+        }).then(function (people) {
+            log("Got response: \n" + people.map(JSON.stringify).join('\n'));
+        }).then(function () {
+            log("Finished!");
+        }).catch(function (err) {
+            log("Error: " + err);
+        }).finally(function () {
+            db.close();
+        });
+
+    </script>
+</body>
+</html>

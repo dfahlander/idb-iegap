@@ -1,0 +1,77 @@
+﻿<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+    <title>IDB-IEGAP Migration Phase 2</title>
+    <script src="../idb-iegap.js"></script>
+    <script src="../bower_components/dexie/dist/latest/Dexie.js"></script>
+</head>
+<body>
+    <h1>IDB-IEGAP Migration Phase 2</h1>
+    <p>
+        In phase 2, we will include the polyfill and migrate the existing database.
+
+        The purpose is to verify that we at the page is able
+        to add the polyfill and still be able to use the existing database as
+        well as upgrading it to start utilizing compound and multiValue indexes.
+    </p>
+    <p>
+        <textarea id="output" style="width:100%; height: 220px;"></textarea>
+    </p>
+    <p>
+        <a href="migration-phase-1.html">&lt;-- Back to phase 1</a>
+    </p>
+    <script>
+
+        function log(txt) {
+            document.getElementById('output').value += txt + "\n";
+        }
+
+        function assert(expression, should) {
+            log((expression ? "OK: " : "FAIL: ") + should);
+        }
+
+        // Define Database:
+        var db = new Dexie("iegap-migration-test");
+        db.version(1).stores({ people: "++id,name" });
+        db.version(2).stores({ people: "++id,name,[id+name],*email" })
+                     .upgrade(function () {
+                         log("Upgrading database to version 2");
+                     });
+
+        db.on.populate.subscribe(function () {
+            log("Populating database (should not happen if phase 1 has run!)");
+            db.people.add({ name: "My first person" });
+            db.people.add({ name: "My second person" });
+        });
+
+        Dexie.Promise.resolve().then(function () {
+            log("Opening database");
+            return db.open();
+        }).then(function () {
+            log("Querying database");
+            return db.people.toArray();
+        }).then(function (people) {
+            log("Got response: \n" + people.map(JSON.stringify).join('\n'));
+        }).then(function () {
+            log("Querying database by its new compound indexes");
+            return db.people.orderBy("[id+name]").toArray();
+        }).then(function (people) {
+            assert(people.length == 2, "People length should be equal to 2");
+            db.people.update(1, { email: ["apan1", "apan2", "apan3"] });
+            return db.people.orderBy("email").distinct().toArray();
+        }).then(function (people) {
+            assert(people.length == 1, "Should only exist one person with email address");
+            return db.people.orderBy("[id+name]").toArray();
+        }).then(function (people) {
+            assert(people.length == 2, "People length is still 2");
+        }).then(function () {
+            log("Finished!");
+        }).catch(function (err) {
+            log("Error: " + err);
+        }).finally(function () {
+            db.close();
+        });
+
+    </script>
+</body>
+</html>

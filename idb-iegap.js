@@ -1,9 +1,14 @@
-﻿if (navigator.userAgent.indexOf("Trident/6.0") !== -1 || navigator.userAgent.indexOf("Trident/7.0") !== -1) (function (idb, undefined) {
-    /*
+﻿if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
+    /* IndexedDB IE Gap polyfill (idb-iegap.js)
+     *
+     * VERSION: $id$
+     * 
      * Gaps if IE10 and IE11:
      *      * The lack of support for compound indexes
      *      * The lack of support for compound primary keys
      *      * The lack of support for multiEntry indexes
+     *      * Always returning false from property IDBObjectStore.autoIncrement 
+     *
      *
      * Where to inject?
      * 
@@ -44,7 +49,7 @@
      *      V indexedDB.open(): extend the returned request and override onupgradeneeded so that main meta-table is created
      *      V                            "                               onsuccess so that the main meta-table is read into a var stored onto db.
      *      V IDBTransaction.objectStore(): Populate the "autoIncrement" property onto returned objectStore. Need to have that stored if so.
-     *      * readyState in IEGAPRequest
+     *      V readyState in IEGAPRequest
      */
     function extend(obj, extension) {
         if (typeof extension !== 'object') extension = extension(); // Allow to supply a function returning the extension. Useful for simplifying private scopes.
@@ -515,7 +520,7 @@
             update: function(newValue) {
                 // Samma eventuella problem här som med delete(). Frågan är var ansvaret ligger för att inte fortsätta jobba med 
                 // en collection som håller på att manipuleras. API usern eller IDB?
-                return this._store.put(this.primaryKey, newValue);
+                return this._store.keyPath ? this._store.put(newValue) : this._store.put(newValue, this.primaryKey);
             }
         }
     });
@@ -558,15 +563,18 @@
         this._el = {};
         this.source = source;
         this.transaction = transaction;
+        this.readyState = "pending";
         var thiz = this;
         var eventTargetProp = { get: function () { return thiz; } };
         deferred(function (e, result) {
             thiz.result = result;
             Object.defineProperty(e, "target", eventTargetProp);
+            thiz.readyState = "done";
             thiz.dispatchEvent(e);
         }, function (e, err) {
             thiz.error = err || e.target.error;
             Object.defineProperty(e, "target", eventTargetProp);
+            thiz.readyState = "done";
             if (e.type != "error") {
                 Object.defineProperty(e, "type", { get: function() { return "error"; } });
             }
@@ -602,7 +610,7 @@
     }
 
     //
-    // DOMStringList
+    // Our DOMStringList
     //
 
     function IEGAPStringList(a) {
@@ -725,10 +733,11 @@
                 /// <param name="range" type="IDBKeyRange"></param>
                 /// <param name="dir" type="String"></param>
                 var meta = this.transaction.db._iegapmeta.stores[this.name];
-                if (!meta || !meta.compound) return orig.apply(this, arguments);
+                if (!meta) return orig.apply(this, arguments);
                 if (Array.isArray(range)) range = new IEGAPKeyRange(range, range);
-                if (range && !(range instanceof IEGAPKeyRange)) throw new RangeError("Primary key is compound but given range is not.");
-                var idbRange = range ?
+                var compound = meta.compound;
+                if (compound && range && !(range instanceof IEGAPKeyRange)) throw new RangeError("Primary key is compound but given range is not.");
+                var idbRange = compound && range ?
                     IDBKeyRange.bound(compoundToString(range.lower), compoundToString(range.upper), range.lowerOpen, range.upperOpen) :
                     range;
                 arguments[0] = idbRange;
@@ -739,7 +748,7 @@
                     req.onsuccess = function (ev) {
                         var cursor = ev.target.result;
                         if (cursor) {
-                            var key = stringToCompound(cursor.key);
+                            var key = compound ? stringToCompound(cursor.key) : cursor.key;
                             var iegapCursor = new IEGAPCursor(cursor, store, store, key, key, cursor.value);
                             success(ev, iegapCursor);
                         } else {
@@ -771,7 +780,7 @@
                 var idxStore = createObjectStore.call(db, idxStoreName, { autoIncrement: true });
 
                 var storeMeta = meta.stores[store.name] || (meta.stores[store.name] = {indexes: {}, metaStores: [] });
-                storeMeta.indexes[name] = {
+                var indexMeta = {
                     name: name,
                     keyPath: keyPath,
                     multiEntry: props.multiEntry || false,
@@ -780,10 +789,24 @@
                     storeName: store.name,
                     idxStoreName: idxStoreName
                 };
+                storeMeta.indexes[name] = indexMeta;
                 storeMeta.metaStores.push(idxStoreName);
                 idxStore.createIndex("fk", "fk", { unique: false });
                 var keyIndex = idxStore.createIndex("k", "k", { unique: props.unique || false });
                 setMeta(db, store.transaction, meta);
+
+                // Reindexing existing data:
+                if (!store._reindexing) {
+                    store._reindexing = true;
+                    store.openCursor().onsuccess = function (e) {
+                        delete store._reindexing;
+                        var cursor = e.target.result;
+                        if (cursor) {
+                            cursor.update(cursor.value); // Will call out version of IDBObjectStore.put() that will re-index all items!
+                            cursor.continue();
+                        }
+                    }
+                }
                 return new IEGAPIndex(keyIndex, store, name, keyPath, props.multiEntry);
             }
 
@@ -933,18 +956,21 @@
                     }
 
                     function replaceIndexKeys() {
-                        var nRequests = indexes.length * 2;
+                        var nRequests = indexes.length;
                         indexes.forEach(function(indexName) {
                             var indexSpec = meta.indexes[indexName];
                             var idxStore = store.transaction.objectStore(indexSpec.idxStoreName);
-                            bulkDelete(idxStore.index("fk"), primKey, checkComplete);
-                            if (indexSpec.multiEntry) {
-                                addMultiEntryIndexKeys(idxStore, indexSpec, value, primKey, null, checkComplete);
-                            } else if (indexSpec.compound) {
-                                addCompoundIndexKey(idxStore, indexSpec, value, primKey, null, checkComplete);
-                            } else {
-                                throw "IEGap assert error";
-                            }
+                            bulkDelete(idxStore.index("fk"), primKey, function () {
+                                // then, when deleted, add entries:
+                                if (indexSpec.multiEntry) {
+                                    addMultiEntryIndexKeys(idxStore, indexSpec, value, primKey, null, checkComplete);
+                                } else if (indexSpec.compound) {
+                                    addCompoundIndexKey(idxStore, indexSpec, value, primKey, null, checkComplete);
+                                } else {
+                                    checkComplete();
+                                    throw "IEGap assert error";
+                                }
+                            });
                         });
 
                         function checkComplete() {
@@ -1040,7 +1066,7 @@
                 return {
                     get: function() {
                         var meta = this.transaction.db._iegapmeta.stores[this.name];
-                        return meta ? meta.autoIncrement : orig.get.call(this);
+                        return meta && 'autoIncrement' in meta ? meta.autoIncrement : orig.get.call(this);
                     }
                 }
             },
@@ -1048,7 +1074,7 @@
                 return {
                     get: function () {
                         var meta = this.transaction.db._iegapmeta.stores[this.name];
-                        return meta ? meta.keyPath : orig.get.call(this);
+                        return meta && 'keyPath' in meta ? meta.keyPath : orig.get.call(this);
                     }
                 }
             }

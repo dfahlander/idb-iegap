@@ -27,5 +27,9 @@
     "bower_components",
     "test",
     "tests"
-  ]
+  ],
+  "devDependencies": {
+    "qunit": "~1.15.0",
+    "dexie": "~1.0.1"
+  }
 }
