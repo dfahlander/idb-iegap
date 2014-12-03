@@ -1,7 +1,7 @@
 ﻿if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
     /* IndexedDB IE Gap polyfill (idb-iegap.js)
      *
-     * VERSION: $Id$
+     * VERSION: $Format:%d$
      * 
      * Gaps if IE10 and IE11:
      *      * The lack of support for compound indexes
