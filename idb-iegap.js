@@ -1,7 +1,7 @@
-﻿if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
+if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
     /* IndexedDB IE Gap polyfill (idb-iegap.js)
      *
-     * VERSION: $Format:%d$
+     * $Format:%d$
      * 
      * Gaps if IE10 and IE11:
      *      * The lack of support for compound indexes
@@ -13,7 +13,7 @@
      * Where to inject?
      * 
      *      Everything that is implemented is marked with a "V" below:
-     * 
+     *
      *      V IDBObjectStore.createIndex(name, [keyPath1, keypath2], { unique: true/false, multiEntry: true });
      *          What to do?
      *              1) If keyPath is an array, create a new table ($iegap-<table>-<indexName> with autoinc, key "key" (unique?) and value "primKey" of this table
@@ -135,16 +135,40 @@
         setByKeyPath(obj, keyPath, undefined);
     }
 
+    function deepClone(any) {
+        if (!any || typeof any !== 'object') return any;
+        var rv;
+        if (Array.isArray(any)) {
+            rv = [];
+            for (var i = 0, l = any.length; i < l; ++i) {
+                rv.push(deepClone(any[i]));
+            }
+        } else if (any instanceof Date) {
+            rv = new Date();
+            rv.setTime(any.getTime());
+        } else {
+            rv = any.constructor ? Object.create(any.constructor.prototype) : {};
+            for (var prop in any) {
+                if (any.hasOwnProperty(prop)) {
+                    rv[prop] = deepClone(any[prop]);
+                }
+            }
+        }
+        return rv;
+    }
+
+    // TODO: Remove this?
     function ignore(op, cb) {
         return function (ev) {
-            console.log("Warning: IEGap polyfill failed to " + (op.call ? op() : op) + ": " + ev.target.error);
+            if (op) console.log("Warning: IEGap polyfill failed to " + (op.call ? op() : op) + ": " + ev.target.error);
             ev.stopPropagation();
             ev.preventDefault();
-            cb();
+            if (cb) cb(ev);
             return false;
         }
     }
 
+    // TODO: Remove this!
     function addCompoundIndexKey(idxStore, indexSpec, value, primKey, rollbacks, onfinally) {
         /// <param name="idxStore" type="IDBObjectStore">The object store for meta-indexes</param>
         try {
@@ -153,7 +177,7 @@
             var req = idxStore.add({ fk: primKey, k: compoundToString(idxKeys) });
             req.onerror = ignore("add compound index", onfinally);
             req.onsuccess = function (ev) {
-                if (rollbacks) rollbacks.push({store: idxStore, del: true, pk: ev.target.result});
+                if (rollbacks) rollbacks.push({store: idxStore, op: "delete", args: [ev.target.result]});
                 onfinally();
             };
         } catch (ex) {
@@ -162,6 +186,7 @@
         }
     }
 
+    // TODO: Remove this!
     function addMultiEntryIndexKeys(idxStore, indexSpec, value, primKey, rollbacks, onfinally) {
         /// <param name="idxStore" type="IDBObjectStore">The object store for meta-indexes</param>
         try {
@@ -172,7 +197,7 @@
                 var req = idxStore.add({ fk: primKey, k: idxKeys });
                 req.onerror = ignore("add index", onfinally);
                 req.onsuccess = function(ev) {
-                    if (rollbacks) rollbacks.push({store: idxStore, del: true, pk: ev.target.result});
+                    if (rollbacks) rollbacks.push({store: idxStore, op: "delete", args: [ev.target.result]});
                     onfinally();
                 }
             } else {
@@ -181,7 +206,7 @@
                     var req2 = idxStore.add({ fk: primKey, k: idxKey });
                     req2.onerror = ignore(function() { return "add multiEntry index " + idxKey + " for " + indexSpec.storeName + "." + indexSpec.keyPath ; }, checkComplete);
                     req2.onsuccess = function(ev) {
-                        if (rollbacks) rollbacks.push({ store: idxStore, del: true, pk: ev.target.result });
+                        if (rollbacks) rollbacks.push({ store: idxStore, op: "delete", args: [ev.target.result] });
                         checkComplete();
                     }
                 });
@@ -196,6 +221,7 @@
         }
     }
 
+    // TODO: Remove this!
     function bulkDelete(index, key, onfinally) {
         /// <param name="index" type="IDBIndex"></param>
         /// <param name="key"></param>
@@ -224,23 +250,34 @@
         }
     }
 
-    function bulk(operations, cb, log) {
+    function bulk(operations, cb) {
         /// <summary>
         ///     Execute given array of operations and the call given callback
         /// </summary>
-        /// <param name="operations" value="[{store: IDBObjectStore.prototype, del:false, pk: null, obj: null}]">Operations to execute</param>
-        /// <param name="cb" type="Function"></param>
-        var nRequests = operations.length;
-        operations.forEach(function (item) {
-            var req = (item.del ? item.store.delete(item.pk) : (item.pk ? item.store.add (item.obj, item.pk) : item.store.add (item.obj)));
-            req.onerror = ignore(log || "executing bulk", checkComplete);
-            req.onsuccess = checkComplete;
+        /// <param name="operations" value="[{store: IDBObjectStore.prototype, op: 'delete / add / get / put', args: []}]">Operations to execute</param>
+        /// <param name="cb" value="function(successCount){}"></param>
+        var nRequests = operations.length,
+            successCount = 0;
+
+        operations.forEach(function(item) {
+            var req = origObjectStorePrototype[item.op].apply(item.store, item.args);
+            req.onsuccess = function(ev) {
+                item.result = ev.target.result;
+                ++successCount;
+                checkComplete();
+            }
+            req.onerror = function(ev) {
+                ev.stopPropagation();
+                ev.preventDefault();
+                item.error = ev.target.error;
+                checkComplete();
+            }
         });
-        function checkComplete() {
-            if (--nRequests === 0 && cb) cb();
+
+        function checkComplete(ev) {
+            if (--nRequests === 0 && cb) cb(successCount);
         }
     }
-
 
     //
     // Constants and imports
@@ -249,6 +286,10 @@
     var IDBKeyRange = window.IDBKeyRange,
         IDBObjectStore = window.IDBObjectStore,
         IDBDatabase = window.IDBDatabase;
+
+    var origObjectStorePrototype = {};
+    extend(origObjectStorePrototype, IDBObjectStore.prototype);
+
 
     function initPowTable() {
         for (var i = 4; i >= -4; --i) {
@@ -319,9 +360,9 @@
                 if (part)
                     rv[i] = "J" + JSON.stringify(part);
                 else if (typeof part === 'undefined')
-                    rv[i] = "u" // undefined
+                    rv[i] = "u"; // undefined
                 else
-                    rv[i] = "0" // null
+                    rv[i] = "0"; // null
             else
                 rv[i] = (part < 0 ? "N" : "n") + unipack(part, 5, 4);
         }
@@ -356,10 +397,10 @@
         return rv;
     }
 
-    function getMeta(db) {
-        /// <param name="db" type="IDBDatabase"></param>
-        /// <returns value="{stores: {storeName: {metaStores: [], indexes: {indexName: {name:'',keyPath:null,multiEntry:false,unique:false,compound:false,idxStoreName:'',storeName:''}}, compound: false, keyPath: ['a','b.c']}}}"></returns>
-        return db._iegapmeta;
+    function getMeta(store) {
+        /// <param name="store" type="IDBObjectStore"></param>
+        /// <returns type="IStoreMeta"></returns>
+        return store.transaction.db._iegapmeta.stores[store.name];
     }
     function setMeta(db, transaction, value) {
         /// <param name="db" type="IDBDatabase"></param>
@@ -402,7 +443,7 @@
             /// <param name="iegIndex" type="IEGAPIndex"></param>
             /// <param name="range" type="IDBKeyRange"></param>
             /// <param name="dir" type="String"></param>
-            return new IEGAPRequest(iegIndex, iegIndex.objectStore.transaction, function (success, error) {
+            return new BlockableIDBRequest(iegIndex, iegIndex.objectStore, function (success, error) {
                 var compound = iegIndex._compound,
                     compoundPrimKey = Array.isArray(iegIndex.objectStore.keyPath);
                 if (compound && Array.isArray(range)) range = new IEGAPKeyRange(range, range);
@@ -443,12 +484,17 @@
         return {
             count: function (key) {
                 if (arguments.length > 0) arguments[0] = parseKeyParam(key);
-                return this._idx.count.apply(this._idx, arguments);
+                var thiz = this;
+                return new BlockableIDBRequest(this, this.objectStore, function(success, error) {
+                    var req = thiz._idx.count.apply(this._idx, arguments);
+                    req.onsuccess = success;
+                    req.onerror = error;
+                });
             },
             get: function(key) {
                 var thiz = this;
-                var req = this._idx.get(parseKeyParam(key));
-                return new IEGAPRequest(this, this.objectStore.transaction, function(success, error) {
+                return new BlockableIDBRequest(this, this.objectStore, function (success, error) {
+                    var req = thiz._idx.get(parseKeyParam(key));
                     // First request the meta-store for this index
                     req.onsuccess = function(ev) {
                         // Check if key was found. 
@@ -470,8 +516,8 @@
             },
             getKey: function(key) {
                 var thiz = this;
-                var req = this._idx.get(parseKeyParam(key));
-                return new IEGAPRequest(this, this.objectStore.transaction, function (success, error) {
+                return new BlockableIDBRequest(this, this.objectStore, function (success, error) {
+                    var req = thiz._idx.get(parseKeyParam(key));
                     req.onsuccess = function (ev) {
                         var res = ev.target.result;
                         success(ev, res && res.fk);
@@ -500,33 +546,34 @@
 
     extend(IEGAPCursor.prototype, function() {
         return {
-            advance: function(n) {
-                this._cursor.advance(n);
+            advance: function (n) {
+                var thiz = this;
+                whenUnblocked(this._store.transaction, function() {
+                    thiz._cursor.advance(n);
+                });
             },
             "continue": function(key) {
                 /// <param name="key" optional="true"></param>
-                if (!key) return this._cursor.continue();
-                if (Array.isArray(key)) return this._cursor.continue(compoundToString(key));
-                return this._cursor.continue(key);
+                var thiz = this;
+                whenUnblocked(this._store.transaction, function() {
+                    if (!key) return thiz._cursor.continue();
+                    if (Array.isArray(key)) return thiz._cursor.continue(compoundToString(key));
+                    return thiz._cursor.continue(key);
+                });
             },
             "delete": function () {
+                // lock not needed. this._store.delete() will target our rewritten delete
                 return this._store.delete(this.primaryKey);// Will automatically delete and iegap index items as well.
-                // req.target will be the object store and not the cursor. Let it be so for now.
-                // TODO: Låtsas som det regnar och fortsätt här. Testa sedan vad som händer om man deletar
-                // ett objekt som resulterar i att en massa multiValue indexes deletas och därmed att
-                // cursor.continue falierar eller beter sig märkligt. Kanske är det upp till implementatören att vänta på delete() requestet eller?
-                // Hur beter sig IDB i detta läge (de som har stöd för multiValue index)?
             },
-            update: function(newValue) {
-                // Samma eventuella problem här som med delete(). Frågan är var ansvaret ligger för att inte fortsätta jobba med 
-                // en collection som håller på att manipuleras. API usern eller IDB?
+            update: function (newValue) {
+                // lock not needed. this._store.put() will target our rewritten put
                 return this._store.keyPath ? this._store.put(newValue) : this._store.put(newValue, this.primaryKey);
             }
         }
     });
 
     function IEGAPEventTarget() {
-        this._el = {};
+        this._el = {}; // Event Listeners
     }
 
     extend(IEGAPEventTarget.prototype, function() {
@@ -543,35 +590,82 @@
             },
             dispatchEvent: function (event) {
                 var listener = this["on" + event.type];
-                if (listener && listener(event) === false) return false;
+                try {
+                    if (listener && listener(event) === false) return false;
+                } catch (err) {
+                    console.error(err);
+                }
                 var listeners = this._el[event.type];
                 if (listeners) {
                     for (var i = 0, l = listeners.length; i < l; ++i) {
                         listener = listeners[i];
-                        if ((listener.handleEvent || listener)(event) === false) return false;
+                        try {
+                            if ((listener.handleEvent || listener)(event) === false) return false;
+                        } catch (err) {
+                            console.error(err);
+                        }
                     }
-                    return true;
                 }
+                return true;
             }
         }
     });
 
+    function IEGAPEvent(type) {
+        var ev = document.createEvent('Event');
+        ev.initEvent(type, true, true);
+        var defaultPrevented = false,
+            propagationStopped = false;
+
+        Object.defineProperties(ev, {
+            preventDefault: {
+                value: function () {
+                    defaultPrevented = true;
+                }
+            },
+            defaultPrevented: {
+                get: function () {
+                    return defaultPrevented;
+                }
+            },
+            stopPropagation: {
+                value: function () {
+                    propagationStopped = true;
+                }
+            },
+            propagationStopped: {
+                get: function () {
+                    return propagationStopped;
+                }
+            },
+            /*currentTarget: {
+                get: function () {
+                    return ev.target;
+                }
+            }*/
+        });
+
+        return ev;
+    }
+
     //
     // IEGAP version of IDBRequest
     //
-    function IEGAPRequest(source, transaction, deferred) {
+    function IEGAPRequest(source, transaction, execute) {
         this._el = {};
         this.source = source;
         this.transaction = transaction;
         this.readyState = "pending";
         var thiz = this;
         var eventTargetProp = { get: function () { return thiz; } };
-        deferred(function (e, result) {
+        execute(function (e, result) {
+            //if (e.type !== 'success') Object.defineProperty(e, "type", { value: "success" });
             thiz.result = result;
             Object.defineProperty(e, "target", eventTargetProp);
             thiz.readyState = "done";
             thiz.dispatchEvent(e);
         }, function (e, err) {
+            //if (e.type !== 'error') Object.defineProperty(e, "type", { value: "error" });
             thiz.error = err || e.target.error;
             Object.defineProperty(e, "target", eventTargetProp);
             thiz.readyState = "done";
@@ -589,14 +683,276 @@
     //
     // IDBOpenRequest
     //
-    function IEGAPOpenRequest() {
-        IEGAPRequest.apply(this, arguments);
+    function IEGAPOpenRequest(source, transaction, execute) {
+        IEGAPRequest(source, transaction, execute);
     }
     derive(IEGAPOpenRequest).from(IEGAPRequest).extend({
         onblocked: null,
         onupgradeneeded: null
     });
 
+    //
+    // Blockable IDBRequest
+    //
+    function BlockableIDBRequest(source, store, execute) {
+        /// <param name="store" type="IDBObjectStore"></param>
+        var queue = store.transaction.$iegQue;
+        if (!queue || queue.length == 0) return IEGAPRequest(source, store.transaction, execute);
+        // Transaction is locked for writing. Put our request in queue:
+        IEGAPRequest(source, store.transaction, function(resolve, reject, thiz) {
+            queue.push(function() {
+                execute(resolve, reject, thiz);
+            });
+        });
+    }
+    derive(BlockableIDBRequest).from(IEGAPRequest);
+
+    //
+    // whenUnblocked - execute callback when transaction is not blocked anymore.
+    //
+    function whenUnblocked(transaction, fn) {
+        var queue = transaction.$iegQue;
+        if (!queue || queue.length == 0)
+            fn();
+        else
+            queue.push(fn);
+    }
+
+    function blockingManystepsOperation(transaction, reusableKeyGetter, fn) {
+        var queue = transaction.$iegQue || (transaction.$iegQue = []);
+        var lastItem = queue[queue.length - 1];
+        if (queue.length === 0 || !reusableKeyGetter || !reusableKeyGetter() || lastItem.reusableKeyGetter() != reusableKeyGetter()) {
+            // Put it on queue, unless the reusableKey is the same, and
+            // the item has not yet started to execute (queue.length >= 2)
+            // reusableKey will optimize the following scenario when createIndex()
+            // was called several times after each other. Only one single reindexer
+            // will have to execute:
+            //   store.createIndex(...);
+            //   store.createIndex(...);
+            //   ...
+            queue.push({
+                execute: fn,
+                reusableKeyGetter: reusableKeyGetter
+            });
+            if (queue.length === 1) executeQueue(transaction);
+        }
+    }
+
+    //
+    // BlockingManystepsRequest
+    //
+    function BlockingWriteRequest(operation) {
+        /// <summary>
+        /// 
+        /// </summary>
+        /// <param name="store" type="IDBObjectStore"></param>
+        /// <param name="operation" value="{store: IDBObjectStore.prototype, op:'', args:[], resultMapper: function(){}}"></param>
+        IEGAPRequest(operation.store, operation.store.transaction, function (success, error, request) {
+            var store = operation.store,
+                transaction = store.transaction,
+                queue = transaction.$iegQue || (transaction.$iegQue = []),
+                op = operation.op,
+                implicitKey = op == 'delete' ? operation.args[0] : store.keyPath ? getByKeyPath(operation.args[0]) : operation.args[1],
+                storeNameColonKey = implicitKey !== undefined && store.name + ":" + implicitKey; // If autoIncrement, implicitKey may be undefined
+
+            extend(operation, {
+                trigSuccess: success,
+                trigError: error,
+                req: request
+            });
+            // Clone the object according to IDB specification (put() and add() has object as first argument)
+            if (op != 'delete') operation.args[0] = deepClone(operation.args[0]);
+
+            var lastItem;
+            if (queue.length <= 1 || (lastItem = queue[queue.length - 1], lastItem.execute) || (lastItem.keys.hasOwnProperty(storeNameColonKey))) {
+                // If queue has one operation only, it is currently being executed so we cant extend it.
+                // If queue has zero operations, there is nothing to extend (obviously)
+                // If last item is a custom executor (has .execute), we can't extend it.
+                // Else, we would be able to extend its last operation unless the last
+                // operation already contained the same key as the the one we are adding. Reason: When our own
+                // index-operations are executed in a bulk, we start by reading all existing values for all indexes
+                // to see which indexes should be deleted and which should be added. That info would be invalid
+                // the bulk contained multiple operations on the same key because the second operation would be
+                // based on the state before the first operation's indexes has been executed.
+                var queueItem = { ops: [operation], keys: {} };
+                if (storeNameColonKey) queueItem.keys[storeNameColonKey] = true;
+                queue.push(queueItem);
+                if (queue.length == 1) executeQueue(store.transaction);
+            } else {
+                lastItem.ops.push(operation);
+                if (storeNameColonKey) lastItem.keys[storeNameColonKey] = true;
+            }
+        });
+    }
+    derive(BlockingWriteRequest).from(IEGAPRequest);
+
+
+    //
+    // runNextOperationBulk - engine that handles read/write queue
+    //
+    function executeQueue(transaction) {
+        /// <summary>
+        ///   Simulates write-blocking queue.
+        ///   If a IEGAPWriteRequest is ongoing on given transaction,
+        ///   all other IEGAPReadRequests or IEGAPWriteRequests will be put
+        ///   on a queue and executed sequencially for the current transaction.
+        ///   Need this to guarantee data integrity for write operations 
+        ///   that includes additional writes to virtual meta index stores.
+        /// </summary>
+        /// <param name="transaction" type="IDBTransaction"></param>
+        var queue = transaction.$iegQue;
+        if (!queue || queue.length === 0) return;
+        var item = queue[0];
+        while (typeof item == 'function') {
+            // A reader found. Just call it, and the next, and the next... until empty or a "blocker" found.
+            queue.shift();
+            item();
+            if (queue.length == 0) return;
+            item = queue[0];
+        }
+
+        // A blocker found. Check if it is a custom 'execute' function or
+        // if it contains a list of predefined operations (ops)
+        if (item.execute) {
+            // The operation is a javascript operation
+            // Execute it and unqueue it when it's done:
+            item.execute(function () {
+                queue.shift();
+                executeQueue(transaction);
+            });
+            return;
+        }
+
+        // The operation is a bulk of predefined operations ('add', 'put', or 'delete')
+        var operations = item.ops;
+        // 1. Extract index keys from put() and add() operations
+        extractIndexKeys(operations);
+        // 2. Execute the main operations in a bulk. Successs/Errors stored in each operation item.
+        bulk(operations, function (successCount) {
+            // 3. Get meta operations to execute:
+            getMetaOperations(transaction, operations, function (metaOperations) {
+                // 4. Execute all meta-operations:
+                bulk(metaOperations, function () {
+                    // 5. Trigger onsuccess / onerror for each finished operation
+                    var transactionAborted = false;
+                    var nRequests = 1;
+                    operations.forEach(function (operation) {
+                        /// <param name="operation" value="{result: '', error: null, indexKeys: [{ idxStoreName: '', key: '' }], store: IDBObjectStore.prototype, op:'delete/add/put', args:[], trigSuccess: function(){}, trigError: function(){}, req: BlockingManystepsRequest.prototype}"></param>
+                        if (transactionAborted) {
+                            operation.trigError(new IEGAPEvent('error'), { name: "AbortError", message: "Transaction aborted" });
+                        } else if (operation.error) {
+                            var fakeEvent = new IEGAPEvent('error');
+                            operation.trigError(fakeEvent, operation.error);
+                            if (fakeEvent.defaultPrevented && fakeEvent.propagationStopped) return; // Just continue
+                            // Trigger the error for real again and make sure to preventDefault() only
+                            // if this fake event was defaultPrevented. Same for propagationStopped!
+                            // If not defaultPrevented, transaction will cancel!
+                            if (!fakeEvent.defaultPrevented)
+                                transactionAborted = true;
+
+                            ++nRequests;
+                            // Redo the operation to trigger a fresh error
+                            var replayedFailingRequest =
+                                origObjectStorePrototype[operation.op].apply(operation.store, operation.args);
+
+                            replayedFailingRequest.onerror = function(realEvent) {
+                                if (fakeEvent.defaultPrevented) realEvent.preventDefault();
+                                if (fakeEvent.propagationStopped) realEvent.stopPropagation();
+                                checkComplete();
+                            }
+                            replayedFailingRequest.onsuccess = function(realEvent) {
+                                console.error("Request didnt fail when replayed! Oops! Fatal! Make sure transaction is aborted then...");
+                                transaction.abort();
+                                transactionAborted = true;
+                                checkComplete();
+                            }
+                        } else {
+                            operation.trigSuccess(new IEGAPEvent('success'), operation.result);
+                        }
+                    });
+                    checkComplete();
+
+                    function checkComplete() {
+                        if (--nRequests === 0) {
+                            queue.shift();
+                            executeQueue(transaction);
+                        }
+                    }
+                });
+            });
+        });
+    }
+
+    function extractIndexKeys(operations) {
+        /// <param name="operations" value="[{store: IDBObjectStore.prototype, op:'delete/add/put', args:[], onsuccess: function(){}, trigError: function(){}, req: BlockingManystepsRequest.prototype}]"></param>        
+        operations.forEach(function(operation) {
+            if (operation.op === 'add' || operation.op === 'put') {
+                var object = operation.args[0],
+                    store = operation.store,
+                    meta = getMeta(store),
+                    indexKeys = (operation.indexKeys = []);
+                var indexes = Object.keys(meta.indexes)
+                    .map(function(name) { return meta.indexes[name]; });
+
+                indexes.forEach(function(indexSpec) {
+                    var idxKeys = getByKeyPath(object, indexSpec.keyPath),
+                        idxStoreName = indexSpec.idxStoreName;
+                    if (idxKeys !== undefined && idxKeys !== null) {
+                        if (indexSpec.multiEntry) {
+                            if (Array.isArray(idxKeys)) {
+                                // the result of evaluating the index's key path yields an Array
+                                idxKeys.forEach(function(idxKey) {
+                                    indexKeys.push({ idxStoreName: idxStoreName, key: idxKey });
+                                });
+                            } else {
+                                // the result of evaluating the index's key path doesn't yield an Array
+                                indexKeys.push({ idxStoreName: idxStoreName, key: idxKeys });
+                            }
+                        } else if (indexSpec.compound) {
+                            if (idxKeys) {
+                                var stringifiedKey = compoundToString(idxKeys);
+                                indexKeys.push({ idxStoreName: idxStoreName, key: stringifiedKey });
+                            }
+                        } else {
+                            throw "IEGap assert error";
+                        }
+                    }
+                });
+            }
+        });
+    }
+
+    function getMetaOperations(transaction, operations, cb) {
+        /// <param name="transaction" type="IDBTransaction"></param>
+        /// <param name="operations" value="[{result: '', error: null, indexKeys: [{ idxStoreName: '', key: '' }], store: IDBObjectStore.prototype, op:'delete/add/put', args:[], onsuccess: function(){}, trigError: function(){}, req: BlockingManystepsRequest.prototype}]"></param>
+        var nRequests = 1,
+            metaOperations = [];
+        operations.forEach(function (operation) {
+            if (operation.error) return; // dont execute meta operation if main operation failed
+            var op = operation.op;
+            var meta = getMeta(operation.store);
+            var indexes = Object.keys(meta.indexes)
+                .map(function(name) {
+                    return meta.indexes[name];
+                });
+            if (op === 'add') {
+                // TODO: map indexKeys to metaOperations
+            } else if (op == 'put') {
+                // TODO: Read existing meta-indexes, diff with indexKeys and map to metaOperations
+            } else if (op == 'delete') {
+                // TODO: Read all existing meta-indexes to delete and map to delete()-metaOperations.
+            } else {
+                var msg = "IEGAP assert failure - bad operation: " + operation.op;
+                console.error(msg);
+                throw msg;
+            }
+        });
+        checkComplete();
+
+        function checkComplete() {
+            if (--nRequests === 0) cb(metaOperations);
+        }
+    }
 
     //
     // Our IDBKeyRange
@@ -635,6 +991,7 @@
         //var getIndexNames = Object.getOwnPropertyDescriptor(IDBObjectStore.prototype, "indexNames").get;
         var deleteObjectStore = IDBDatabase.prototype.deleteObjectStore;
         var createObjectStore = IDBDatabase.prototype.createObjectStore;
+
 
         initPowTable();
 
@@ -716,15 +1073,37 @@
         //
         IDBObjectStore.prototype.count = override(IDBObjectStore.prototype.count, function(orig) {
             return function (key) {
+                var meta = this.transaction.db._iegapmeta.stores[this.name];
                 if (arguments.length > 0) arguments[0] = parseKeyParam(key);
-                return orig.apply(this, arguments);
+                if (!meta || meta.metaStores.length == 0) return orig.apply(this, arguments);
+                // If comes here, the store has metaStores containing polyfilled indexes.
+                // If so, the transaction may be locked for writing and we must therefore
+                // use BlockableIDBRequest to defer the operation if it is.
+                var thiz = this,
+                    args = arguments;
+                return new BlockableIDBRequest(this, this, function(success, error) {
+                    var req = orig.apply(thiz, args);
+                    req.onsuccess = success;
+                    req.onerror = error;
+                });
             }
         });
 
         IDBObjectStore.prototype.get = override(IDBObjectStore.prototype.get, function(orig) {
-            return function(key) {
+            return function (key) {
+                var meta = this.transaction.db._iegapmeta.stores[this.name];
                 if (arguments.length > 0) arguments[0] = parseKeyParam(key);
-                return orig.apply(this, arguments);
+                if (!meta || meta.metaStores.length == 0) return orig.apply(this, arguments);
+                // If comes here, the store has metaStores containing polyfilled indexes.
+                // If so, the transaction may be locked for writing and we must therefore
+                // use BlockableIDBRequest to defer the operation if it is.
+                var thiz = this,
+                    args = arguments;
+                return new BlockableIDBRequest(this, this, function (success, error) {
+                    var req = orig.apply(thiz, args);
+                    req.onsuccess = success;
+                    req.onerror = error;
+                });
             }
         });
 
@@ -743,7 +1122,7 @@
                 arguments[0] = idbRange;
                 var req = orig.apply(this, arguments);
                 var store = this;
-                return new IEGAPRequest(this, this.transaction, function(success, error) {
+                return new BlockableIDBRequest(this, this, function(success, error) {
                     req.onerror = error;
                     req.onsuccess = function (ev) {
                         var cursor = ev.target.result;
@@ -796,6 +1175,39 @@
                 setMeta(db, store.transaction, meta);
 
                 // Reindexing existing data:
+                var reusableKey = store.name;
+                blockingManystepsOperation(store.transaction, function() { return reusableKey; }, function (done) {
+                    var currentBulk = [];
+                    store.openCursor().onsuccess = function (ev) {
+                        reusableKey = null; // At this point, a new reindexer must not reuse us anymore!
+                        var cursor = ev.target.result;
+                        if (cursor) {
+                            currentBulk.push(cursor.value);
+                            if (currentBulk.length === 1000) {
+                                reindex(currentBulk, false);
+                                currentBulk = [];
+                            }
+                            cursor.continue();
+                        } else {
+                            reindex(currentBulk, true);
+                        }
+                    }
+                    function reindex(objectsToReindex, isLastBulk) {
+                        var lastReq = null;
+                        objectsToReindex.forEach(function (obj) {
+                            lastReq = store.put(obj); // Will call our version of 'put', which will index correctly.
+                            lastReq.onerror = ignore("reindex existing object");
+                        });
+                        if (isLastBulk) {
+                            if (!lastReq) done();
+                            else {
+                                lastReq.onerror = ignore("reindex the last object", done);
+                                lastReq.onsuccess = done;
+                            }
+                        }
+                    }
+                });
+
                 if (!store._reindexing) {
                     store._reindexing = true;
                     store.openCursor().onsuccess = function (e) {
@@ -843,22 +1255,31 @@
             };
         });
         
+        // TODO: Check if this is finished in its implementation. May probably be!
         IDBObjectStore.prototype.add = override(IDBObjectStore.prototype.add, function (origFunc) {
             return function(value, key) {
-                var meta = this.transaction.db._iegapmeta.stores[this.name];
+                var meta = getMeta(this);
                 if (!meta) return origFunc.apply(this, arguments);
-                var addReq;
                 if (meta.compound) {
                     // Compound primary key
                     // Key must not be provided when having inbound keys (compound is inbound)
                     if (key) return this.add(null); // Trigger DOMException(DataError)!
                     key = compoundToString(getByKeyPath(value, meta.keyPath));
-                    addReq = origFunc.call(this, value, key);
-                } else {
-                    addReq = origFunc.apply(this, arguments);
+                    return new BlockingWriteRequest({
+                        store: this,
+                        op: 'add',
+                        args: [value, key],
+                        resultMapper: function (r) { return stringToCompound(r); } // TODO: Execute resultsMapper somewhere!
+                    });
+                    //addReq = origFunc.call(this, value, key);
                 }
                 var indexes = Object.keys(meta.indexes);
-                if (!meta.compound && indexes.length === 0) return addReq; // No indexes to deal with
+                if (!meta.compound && indexes.length === 0) return origFunc.apply(this, arguments); // No indexes to deal with
+                return new BlockingWriteRequest({
+                    store: this,
+                    op: 'add',
+                    args: arguments
+                });
                 var store = this;
                 return new IEGAPRequest(this, this.transaction, function(success, error) {
                     var addEvent = null, errorEvent = null, indexAddFinished = false, rollbacks = [];
@@ -928,6 +1349,7 @@
             }
         });
 
+        // TODO: Rewrite this:
         IDBObjectStore.prototype.put = override(IDBObjectStore.prototype.put, function (origFunc) {
             return function (value, key) {
                 var meta = this.transaction.db._iegapmeta.stores[this.name];
@@ -981,6 +1403,7 @@
             }
         });
 
+        // TODO: Rewrite this!
         IDBObjectStore.prototype.delete = override(IDBObjectStore.prototype.delete, function (origFunc) {
             return function (key) {
                 var meta = this.transaction.db._iegapmeta.stores[this.name];
@@ -1019,6 +1442,10 @@
 
         IDBObjectStore.prototype.clear = override(IDBObjectStore.prototype.clear, function(origFunc) {
             return function() {
+                // TODO: Förenkla denna!
+                // Returnera ett BlockableIDBRequest() som i sin execute gör:
+                // 1. cleara alla meta-stores
+                // 2. cleara object store och sätt onsuccess = success, onerror = error.
                 var clearReq = origFunc.apply(this, arguments);
                 var meta = this.transaction.db._iegapmeta.stores[this.name];
                 if (!meta) return clearReq;
@@ -1156,6 +1583,27 @@
                 }
             }
         });
+    }
+
+    function IIndexMeta() {
+        return {
+            name: '',
+            keyPath: '', // string or array of strings
+            multiEntry: false,
+            unique: false,
+            compound: false,
+            storeName: '',
+            idxStoreName: ''
+        };
+    }
+
+    function IStoreMeta() {
+        return {
+            metaStores: [''],
+            indexes: { indexName: new IIndexMeta() }, // map<indexName,IIndexMeta>
+            compound: false,
+            keyPath: ['a', 'b.c'] // string or array of strings
+        };
     }
 
     Constructor();
