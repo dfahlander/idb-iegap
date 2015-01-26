@@ -168,6 +168,25 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
         }
     }
 
+    function generateIndexRecords(transaction, obj, indexMeta, outOperations) {
+        /// <summary>
+        /// 
+        /// </summary>
+        /// <param name="transaction" type="IDBTransaction"></param>
+        /// <param name="obj" type="Object">Object to index</param>
+        /// <param name="indexMeta" type="IIndexMeta">Index specification of the index type</param>
+        /// <param name="outOperations" type="Array" elementType="IOperation">out: Operations that would do the job</param>
+        if (indexMeta.compound) {
+            var idxKeys = getByKeyPath(obj, indexMeta.keyPath);
+            if (idxKeys !== undefined) {
+                var store = indexMeta.
+                outOperations.push({store: , op: , args: });
+            }
+        } else if (indexMeta.multiEntry) {
+            
+        }
+    }
+
     // TODO: Remove this!
     function addCompoundIndexKey(idxStore, indexSpec, value, primKey, rollbacks, onfinally) {
         /// <param name="idxStore" type="IDBObjectStore">The object store for meta-indexes</param>
@@ -254,7 +273,7 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
         /// <summary>
         ///     Execute given array of operations and the call given callback
         /// </summary>
-        /// <param name="operations" value="[{store: IDBObjectStore.prototype, op: 'delete / add / get / put', args: []}]">Operations to execute</param>
+        /// <param name="operations" type="Array" elementType="IOperation">Operations to execute</param>
         /// <param name="cb" value="function(successCount){}"></param>
         var nRequests = operations.length,
             successCount = 0;
@@ -1176,7 +1195,9 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
 
                 // Reindexing existing data:
                 var reusableKey = store.name;
-                blockingManystepsOperation(store.transaction, function() { return reusableKey; }, function (done) {
+                blockingManystepsOperation(store.transaction, function () { return reusableKey; }, function (done) {
+                    // TODO: Don't put()! It will cause an infinite wait since we are holding the lock!
+                    // Instead, use generateIndexRecords(obj, indexMeta, outOperations)
                     var currentBulk = [];
                     store.openCursor().onsuccess = function (ev) {
                         reusableKey = null; // At this point, a new reindexer must not reuse us anymore!
@@ -1603,6 +1624,16 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
             indexes: { indexName: new IIndexMeta() }, // map<indexName,IIndexMeta>
             compound: false,
             keyPath: ['a', 'b.c'] // string or array of strings
+        };
+    }
+
+    function IOperation() {
+        return {
+            store: IDBObjectStore.prototype,
+            op: 'delete / add / get / put',
+            args: [],
+            result: null,
+            error: null
         };
     }
 
