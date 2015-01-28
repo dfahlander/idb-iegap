@@ -157,7 +157,6 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
         return rv;
     }
 
-    // TODO: Remove this?
     function ignore(op, cb) {
         return function (ev) {
             if (op) console.log("Warning: IEGap polyfill failed to " + (op.call ? op() : op) + ": " + ev.target.error);
@@ -168,147 +167,34 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
         }
     }
 
-    function generateIndexRecords(transaction, obj, indexMeta, outOperations) {
-        /// <summary>
-        /// 
-        /// </summary>
-        /// <param name="transaction" type="IDBTransaction"></param>
-        /// <param name="obj" type="Object">Object to index</param>
-        /// <param name="indexMeta" type="IIndexMeta">Index specification of the index type</param>
-        /// <param name="outOperations" type="Array" elementType="IOperation">out: Operations that would do the job</param>
-        if (indexMeta.compound) {
-            var idxKeys = getByKeyPath(obj, indexMeta.keyPath);
-            if (idxKeys !== undefined) {
-                var store = indexMeta.
-                outOperations.push({store: , op: , args: });
-            }
-        } else if (indexMeta.multiEntry) {
-            
-        }
-    }
-
-    // TODO: Remove this!
-    function addCompoundIndexKey(idxStore, indexSpec, value, primKey, rollbacks, onfinally) {
-        /// <param name="idxStore" type="IDBObjectStore">The object store for meta-indexes</param>
-        try {
-            var idxKeys = getByKeyPath(value, indexSpec.keyPath);
-            if (idxKeys === undefined) return onfinally(); // no key to add index for
-            var req = idxStore.add({ fk: primKey, k: compoundToString(idxKeys) });
-            req.onerror = ignore("add compound index", onfinally);
-            req.onsuccess = function (ev) {
-                if (rollbacks) rollbacks.push({store: idxStore, op: "delete", args: [ev.target.result]});
-                onfinally();
-            };
-        } catch (ex) {
-            console.log("IEGap polyfill exception when adding compound index key");
-            onfinally();
-        }
-    }
-
-    // TODO: Remove this!
-    function addMultiEntryIndexKeys(idxStore, indexSpec, value, primKey, rollbacks, onfinally) {
-        /// <param name="idxStore" type="IDBObjectStore">The object store for meta-indexes</param>
-        try {
-            var idxKeys = getByKeyPath(value, indexSpec.keyPath);
-            if (idxKeys === undefined) return onfinally(); // no key to add index for.
-            if (!Array.isArray(idxKeys)) {
-                // the result of evaluating the index's key path doesn't yield an Array
-                var req = idxStore.add({ fk: primKey, k: idxKeys });
-                req.onerror = ignore("add index", onfinally);
-                req.onsuccess = function(ev) {
-                    if (rollbacks) rollbacks.push({store: idxStore, op: "delete", args: [ev.target.result]});
-                    onfinally();
-                }
-            } else {
-                // the result of evaluating the index's key path yields an Array
-                idxKeys.forEach(function(idxKey) {
-                    var req2 = idxStore.add({ fk: primKey, k: idxKey });
-                    req2.onerror = ignore(function() { return "add multiEntry index " + idxKey + " for " + indexSpec.storeName + "." + indexSpec.keyPath ; }, checkComplete);
-                    req2.onsuccess = function(ev) {
-                        if (rollbacks) rollbacks.push({ store: idxStore, op: "delete", args: [ev.target.result] });
-                        checkComplete();
-                    }
-                });
-
-                var nRequests = idxKeys.length;
-                function checkComplete() {
-                    if (--nRequests === 0) onfinally();
-                }
-            }
-        } catch (ex) {
-            console.log("IEGap polyfill exception when adding multientry key");
-        }
-    }
-
-    // TODO: Remove this!
-    function bulkDelete(index, key, onfinally) {
-        /// <param name="index" type="IDBIndex"></param>
-        /// <param name="key"></param>
-        var cursorReq = index.openKeyCursor(key);
-        var primKeys = [];
-        cursorReq.onerror = ignore("list indexed references", onfinally);
-        cursorReq.onsuccess = function (ev) {
-            var cursor = cursorReq.result;
-            if (!cursor) return doDelete();
-            primKeys.push(cursor.primaryKey);
-            cursor.continue();
-        }
-
-        function doDelete() {
-            var store = index.objectStore;
-            primKeys.forEach(function (primKey) {
-                var req = store.delete(primKey);
-                req.onerror = ignore("delete meta index", checkComplete);
-                req.onsuccess = checkComplete;
-            });
-            var nRequests = primKeys.length;
-            if (nRequests === 0) onfinally();
-            function checkComplete() {
-                if (--nRequests === 0) onfinally();
-            }
-        }
-    }
-
-    function bulk(operations, cb) {
-        /// <summary>
-        ///     Execute given array of operations and the call given callback
-        /// </summary>
-        /// <param name="operations" type="Array" elementType="IOperation">Operations to execute</param>
-        /// <param name="cb" value="function(successCount){}"></param>
-        var nRequests = operations.length,
-            successCount = 0;
-
-        operations.forEach(function(item) {
-            var req = origObjectStorePrototype[item.op].apply(item.store, item.args);
-            req.onsuccess = function(ev) {
-                item.result = ev.target.result;
-                ++successCount;
-                checkComplete();
-            }
-            req.onerror = function(ev) {
-                ev.stopPropagation();
-                ev.preventDefault();
-                item.error = ev.target.error;
-                checkComplete();
-            }
-        });
-
-        function checkComplete(ev) {
-            if (--nRequests === 0 && cb) cb(successCount);
-        }
-    }
-
     //
     // Constants and imports
     //
     var POWTABLE = {};
     var IDBKeyRange = window.IDBKeyRange,
         IDBObjectStore = window.IDBObjectStore,
-        IDBDatabase = window.IDBDatabase;
+        IDBDatabase = window.IDBDatabase,
+        IDBIndex = window.IDBIndex;
 
-    var origObjectStorePrototype = {};
-    extend(origObjectStorePrototype, IDBObjectStore.prototype);
-
+    var OrigProtos = {
+        DB: {
+            objectStoreNames: Object.getOwnPropertyDescriptor(IDBDatabase.prototype, "objectStoreNames"),
+            deleteObjectStore: IDBDatabase.prototype.deleteObjectStore,
+            createObjectStore: IDBDatabase.prototype.createObjectStore
+        },
+        ObjectStore: {
+            add: IDBObjectStore.prototype.add,
+            put: IDBObjectStore.prototype.put,
+            'delete': IDBObjectStore.prototype.delete,
+            get: IDBObjectStore.prototype.get,
+            count: IDBObjectStore.prototype.count,
+            openCursor: IDBObjectStore.prototype.openCursor,
+            index: IDBObjectStore.prototype.index,
+        },
+        Index: {
+            openCursor: IDBIndex.prototype.openCursor
+        }
+    }
 
     function initPowTable() {
         for (var i = 4; i >= -4; --i) {
@@ -446,6 +332,69 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
         return key;
     }
 
+    function bulk(operations, cb) {
+        /// <summary>
+        ///     Execute given array of operations and the call given callback
+        /// </summary>
+        /// <param name="operations" type="Array" elementType="IOperation">Operations to execute</param>
+        /// <param name="cb" value="function(successCount){}"></param>
+        var nRequests = operations.length,
+            successCount = 0;
+
+        operations.forEach(function(item) {
+            var req = OrigProtos.ObjectStore[item.op].apply(item.store, item.args);
+            req.onsuccess = function(ev) {
+                item.result = ev.target.result;
+                ++successCount;
+                checkComplete();
+            }
+            req.onerror = function(ev) {
+                ev.stopPropagation();
+                ev.preventDefault();
+                item.error = ev.target.error;
+                checkComplete();
+            }
+        });
+
+        function checkComplete(ev) {
+            if (--nRequests === 0 && cb) cb(successCount);
+        }
+    }
+
+    function generateIndexingOperations(transaction, obj, primKey, indexMeta, outOperations) {
+        /// <summary>
+        /// 
+        /// </summary>
+        /// <param name="transaction" type="IDBTransaction"></param>
+        /// <param name="obj" type="Object">Object to index</param>
+        /// <param name="primKey" type="String">Primary key of the object.</param>
+        /// <param name="indexMeta" type="IIndexMeta">Index specification of the index type</param>
+        /// <param name="outOperations" type="Array" elementType="IOperation">out: Operations that would do the job</param>
+        if (Array.isArray(primKey)) primKey = compoundToString(primKey);
+        var idxKeys = getByKeyPath(obj, indexMeta.keyPath);
+        if (idxKeys === undefined) return;
+        var idxStore = transaction.objectStore(indexMeta.idxStoreName);
+        var idx, idxPrimKey;
+        if (indexMeta.compound) {
+            idx = { fk: primKey, k: compoundToString(idxKeys) };
+            idxPrimKey = compoundToString([idx.fk, idx.k]);
+            outOperations.push({ store: idxStore, op: "add", args: [idx, idxPrimKey] });
+        } else if (indexMeta.multiEntry) {
+            if (!Array.isArray(idxKeys)) {
+                idx = { fk: primKey, k: idxKeys };
+                idxPrimKey = compoundToString([idx.fk, idx.k]);
+                outOperations.push({ store: idxStore, op: "add", args: [idx, idxPrimKey] });
+            } else {
+                idxKeys.forEach(function(idxKey) {
+                    idx = { fk: primKey, k: idxKey };
+                    idxPrimKey = compoundToString([idx.fk, idx.k]);
+                    outOperations.push({ store: idxStore, op: "add", args: [idx, idxPrimKey]});
+                });
+            }
+        }
+    }
+
+
     function IEGAPIndex(idbIndex, idbStore, name, keyPath, multiEntry) {
         this._idx = idbIndex;
         this._store = idbStore;
@@ -471,7 +420,7 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
                     range;
 
                 if (typeof idbRange === 'undefined') idbRange = null;
-                var req = iegIndex._idx.openCursor(idbRange, dir);
+                var req = OrigProtos.Index.openCursor.call(iegIndex._idx, idbRange, dir);
                 req.onerror = error;
                 if (includeValue) {
                     req.onsuccess = function(ev) {
@@ -737,6 +686,7 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
             queue.push(fn);
     }
 
+    // TODO: Remove reusableKeyGetter!
     function blockingManystepsOperation(transaction, reusableKeyGetter, fn) {
         var queue = transaction.$iegQue || (transaction.$iegQue = []);
         var lastItem = queue[queue.length - 1];
@@ -872,7 +822,7 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
                             ++nRequests;
                             // Redo the operation to trigger a fresh error
                             var replayedFailingRequest =
-                                origObjectStorePrototype[operation.op].apply(operation.store, operation.args);
+                                OrigProtos.ObjectStore[operation.op].apply(operation.store, operation.args);
 
                             replayedFailingRequest.onerror = function(realEvent) {
                                 if (fakeEvent.defaultPrevented) realEvent.preventDefault();
@@ -902,6 +852,7 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
         });
     }
 
+    // TODO: THis might be redundant. Remove?
     function extractIndexKeys(operations) {
         /// <param name="operations" value="[{store: IDBObjectStore.prototype, op:'delete/add/put', args:[], onsuccess: function(){}, trigError: function(){}, req: BlockingManystepsRequest.prototype}]"></param>        
         operations.forEach(function(operation) {
@@ -946,20 +897,63 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
         /// <param name="operations" value="[{result: '', error: null, indexKeys: [{ idxStoreName: '', key: '' }], store: IDBObjectStore.prototype, op:'delete/add/put', args:[], onsuccess: function(){}, trigError: function(){}, req: BlockingManystepsRequest.prototype}]"></param>
         var nRequests = 1,
             metaOperations = [];
+
         operations.forEach(function (operation) {
             if (operation.error) return; // dont execute meta operation if main operation failed
-            var op = operation.op;
-            var meta = getMeta(operation.store);
-            var indexes = Object.keys(meta.indexes)
-                .map(function(name) {
-                    return meta.indexes[name];
-                });
+            var op = operation.op,
+                meta = getMeta(operation.store),
+                primKey = operation.result,
+                indexes = Object.keys(meta.indexes)
+                    .map(function(name) {
+                        return meta.indexes[name];
+                    });
             if (op === 'add') {
-                // TODO: map indexKeys to metaOperations
+                indexes.forEach(function(indexMeta) {
+                    generateIndexingOperations(transaction, operation.args[0], primKey, indexMeta, metaOperations);
+                });
             } else if (op == 'put') {
-                // TODO: Read existing meta-indexes, diff with indexKeys and map to metaOperations
+                // Read existing meta-indexes, diff with indexKeys and map to metaOperations
+                indexes.forEach(function(indexMeta) {
+                    ++nRequests;
+                    listExistingIndexes(indexMeta, primKey, function(existingIndexesPrimKeys) {
+                        var partialMetaOps = [];
+                        generateIndexingOperations(transaction, operation.args[0], primKey, indexMeta, partialMetaOps);
+                        // Diff with existing indexes:
+                        partialMetaOps.forEach(function(metaOp) {
+                            // Only include index additions that did not already exist.
+                            // We check this by trying to find whether the primary key of the index to add did already exist
+                            if (!existingIndexesPrimKeys[metaOp.args[1]]) {
+                                metaOperations.push(metaOp);
+                            } else {
+                                delete existingIndexesPrimKeys[metaOp.args[1]];
+                            }
+                        });
+                        // Now delete existing indexes that was not to be added
+                        Object.keys(existingIndexesPrimKeys).forEach(function (idxToDeletePk) {
+                            metaOperations.push({
+                                store: transaction.objectStore(indexMeta.idxStoreName),
+                                op: 'delete',
+                                args: [idxToDeletePk]
+                            });
+                        });
+                        checkComplete();
+                    });
+                });
             } else if (op == 'delete') {
-                // TODO: Read all existing meta-indexes to delete and map to delete()-metaOperations.
+                // Read all existing meta-indexes to delete and map to delete()-metaOperations.
+                indexes.forEach(function(indexMeta) {
+                    ++nRequests;
+                    listExistingIndexes(indexMeta, primKey, function(existingIndexesPrimKeys) {
+                        Object.keys(existingIndexesPrimKeys).forEach(function(idxToDeletePk) {
+                            metaOperations.push({
+                                store: transaction.objectStore(indexMeta.idxStoreName),
+                                op: 'delete',
+                                args: [idxToDeletePk]
+                            });
+                        });
+                        checkComplete();
+                    });
+                });
             } else {
                 var msg = "IEGAP assert failure - bad operation: " + operation.op;
                 console.error(msg);
@@ -970,6 +964,26 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
 
         function checkComplete() {
             if (--nRequests === 0) cb(metaOperations);
+        }
+    }
+
+    function listExistingIndexes(indexMeta, primaryKey, cb) {
+        /// <summary>
+        /// 
+        /// </summary>
+        /// <param name="indexMeta" type="IIndexMeta">Index specification to iterate</param>
+        /// <param name="primaryKey">Primary key of the object to list indexes for</param>
+        /// <param name="cb">function (result){} where result is a set of primary keys of the idxObjectStore]</param>
+        var idxStore = transaction.objectStore(indexMeta.idxStoreName);
+        var pkIndex = OrigProtos.ObjectStore.index.call(idxStore, "pk");
+        var req = pkIndex.openKeyCursor(primaryKey);
+        var result = {};
+        req.onerror = ignore("retrieving existing indexes", function() { cb(result); });
+        req.onsuccess = function() {
+            var cursor = req.result;
+            if (!cursor) { cb(result); return; }
+            result[cursor.primaryKey] = true;
+            cursor.continue();
         }
     }
 
@@ -1006,12 +1020,6 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
 
     function Constructor() {
 
-        var getObjectStoreNames = Object.getOwnPropertyDescriptor(IDBDatabase.prototype, "objectStoreNames").get;
-        //var getIndexNames = Object.getOwnPropertyDescriptor(IDBObjectStore.prototype, "indexNames").get;
-        var deleteObjectStore = IDBDatabase.prototype.deleteObjectStore;
-        var createObjectStore = IDBDatabase.prototype.createObjectStore;
-
-
         initPowTable();
 
         //
@@ -1028,8 +1036,8 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
                         var db = (iegReq.result = req.result);
                         db._upgradeTransaction = req.transaction; // Needed in IDBDatabase.prototype.deleteObjectStore(). Save to set like this because during upgrade transaction, no other transactions may live concurrently.
                         db._iegapmeta = { stores: {} };
-                        if (!getObjectStoreNames.apply(db).contains("$iegapmeta")) {
-                            var store = createObjectStore.call(db, "$iegapmeta");
+                        if (!OrigProtos.DB.objectStoreNames.get.apply(db).contains("$iegapmeta")) {
+                            var store = OrigProtos.DB.createObjectStore.call(db, "$iegapmeta");
                             store.add(db._iegapmeta, 1);
                         }
                         ev.target = ev.currentTarget = iegReq;
@@ -1158,6 +1166,11 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
         });
 
         IDBObjectStore.prototype.createIndex = override(IDBObjectStore.prototype.createIndex, function (origFunc) {
+            return function (name, keyPath, props) {
+                if (Array.isArray(keyPath) || (props && props.multiEntry))
+                    return createIndex(this, name, keyPath, props || {});
+                return origFunc.apply(this, arguments);
+            }
 
             function createIndex(store, name, keyPath, props) {
                 /// <summary>
@@ -1172,10 +1185,10 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
                 var meta = db._iegapmeta;
                 if (props.multiEntry && Array.isArray(keyPath)) {
                     // IDB spec require us to throw DOMException.INVALID_ACCESS_ERR
-                    createObjectStore.call(db, "dummy", { keyPath: "", autoIncrement: true }); // Will throw DOMException.INVALID_ACCESS_ERR
+                    OrigProtos.DB.createObjectStore.call(db, "dummy", { keyPath: "", autoIncrement: true }); // Will throw DOMException.INVALID_ACCESS_ERR
                     throw "invalid access"; // fallback.
                 }
-                var idxStore = createObjectStore.call(db, idxStoreName, { autoIncrement: true });
+                var idxStore = OrigProtos.DB.createObjectStore.call(db, idxStoreName, { autoIncrement: false });
 
                 var storeMeta = meta.stores[store.name] || (meta.stores[store.name] = {indexes: {}, metaStores: [] });
                 var indexMeta = {
@@ -1194,59 +1207,22 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
                 setMeta(db, store.transaction, meta);
 
                 // Reindexing existing data:
-                var reusableKey = store.name;
-                blockingManystepsOperation(store.transaction, function () { return reusableKey; }, function (done) {
-                    // TODO: Don't put()! It will cause an infinite wait since we are holding the lock!
-                    // Instead, use generateIndexRecords(obj, indexMeta, outOperations)
-                    var currentBulk = [];
-                    store.openCursor().onsuccess = function (ev) {
-                        reusableKey = null; // At this point, a new reindexer must not reuse us anymore!
-                        var cursor = ev.target.result;
+                blockingManystepsOperation(store.transaction, null, function (done) {
+                    var indexingOperations = [];
+                    var req = OrigProtos.ObjectStore.openCursor.call(store);
+                    req.onsuccess = function (ev) {
+                        var cursor = req.result;
                         if (cursor) {
-                            currentBulk.push(cursor.value);
-                            if (currentBulk.length === 1000) {
-                                reindex(currentBulk, false);
-                                currentBulk = [];
-                            }
+                            generateIndexingOperations(transaction, cursor.value, cursor.primaryKey, indexMeta, indexingOperations);
                             cursor.continue();
                         } else {
-                            reindex(currentBulk, true);
+                            bulk(indexingOperations, done);
                         }
                     }
-                    function reindex(objectsToReindex, isLastBulk) {
-                        var lastReq = null;
-                        objectsToReindex.forEach(function (obj) {
-                            lastReq = store.put(obj); // Will call our version of 'put', which will index correctly.
-                            lastReq.onerror = ignore("reindex existing object");
-                        });
-                        if (isLastBulk) {
-                            if (!lastReq) done();
-                            else {
-                                lastReq.onerror = ignore("reindex the last object", done);
-                                lastReq.onsuccess = done;
-                            }
-                        }
-                    }
+                    req.onerror = ignore("index existing data in createIndex()", done);
                 });
 
-                if (!store._reindexing) {
-                    store._reindexing = true;
-                    store.openCursor().onsuccess = function (e) {
-                        delete store._reindexing;
-                        var cursor = e.target.result;
-                        if (cursor) {
-                            cursor.update(cursor.value); // Will call out version of IDBObjectStore.put() that will re-index all items!
-                            cursor.continue();
-                        }
-                    }
-                }
                 return new IEGAPIndex(keyIndex, store, name, keyPath, props.multiEntry);
-            }
-
-            return function (name, keyPath, props) {
-                if (Array.isArray(keyPath) || (props && props.multiEntry))
-                    return createIndex(this, name, keyPath, props || {});
-                return origFunc.apply(this, arguments);
             }
         });
 
@@ -1258,7 +1234,7 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
                 if (!storeMeta) return origFunc.apply(this, arguments);
                 var indexMeta = storeMeta.indexes[name];
                 if (!indexMeta) return origFunc.apply(this, arguments);
-                deleteObjectStore.call(db, indexMeta.idxStoreName);
+                OrigProtos.DB.deleteObjectStore.call(db, indexMeta.idxStoreName);
                 delete storeMeta.indexes[name];
                 setMeta(db, this.transaction, meta);
             }
@@ -1289,7 +1265,7 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
                     return new BlockingWriteRequest({
                         store: this,
                         op: 'add',
-                        args: [value, key],
+                        args: [deepClone(value), key], // IDB Spec requires a clone at this point.
                         resultMapper: function (r) { return stringToCompound(r); } // TODO: Execute resultsMapper somewhere!
                     });
                     //addReq = origFunc.call(this, value, key);
