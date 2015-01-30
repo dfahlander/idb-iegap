@@ -251,25 +251,38 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
         return rv;
     }
 
-    function compoundToString(a) {
+    // According to IDB Spec 3.1.3 Keys, the following types must be compared in the right order:
+    var KEY_TYPE_ARRAY = "z",
+        KEY_TYPE_STRING = "s",
+        KEY_TYPE_DATE = "d",
+        KEY_TYPE_INFINITY = "Z",
+        KEY_TYPE_POSNUMBER = "P",
+        KEY_TYPE_NEGNUMBER = "N",
+        KEY_TYPE_NEGINFINITY = "0";
+
+    function compoundToString(a, parents) {
         /// <param name="a" type="Array"></param>
+        if (!a || !Array.isArray(a)) return null;
         var l = a.length,
             rv = new Array(l);
         for (var i = 0; i < l; ++i) {
             var part = a[i];
-            if (part instanceof Date)
-                rv[i] = "D" + unipack(part.getTime(), 4, 0);
-            else if (typeof part === 'string')
-                rv[i] = "S" + part;
-            else if (isNaN(part))
-                if (part)
-                    rv[i] = "J" + JSON.stringify(part);
-                else if (typeof part === 'undefined')
-                    rv[i] = "u"; // undefined
-                else
-                    rv[i] = "0"; // null
-            else
-                rv[i] = (part < 0 ? "N" : "n") + unipack(part, 5, 4);
+            if (typeof part === 'string') 
+                rv[i] = KEY_TYPE_STRING + part;
+            else if (typeof part === 'number') {
+                if (isNaN(part)) return null;
+                if (part === -Infinity) rv[i] = KEY_TYPE_NEGINFINITY;
+                else if (part === Infinity) rv[i] = KEY_TYPE_INFINITY;
+                else rv[i] = (part < 0 ? KEY_TYPE_NEGNUMBER : KEY_TYPE_POSNUMBER) + unipack(part, 5, 4);
+            } else if (part instanceof Date)
+                rv[i] = KEY_TYPE_DATE + unipack(part.getTime(), 4, 0);
+            else if (Array.isArray(part)) {
+                if (part === a || (parents && parents.indexOf(part) !== -1)) return null; // Accoriding to IDB Spec 3.1.3 Keys
+                var subArray = compoundToString(part, parents ? parents.concat(a) : [a]);
+                if (!subArray) return null; // Accoriding to IDB Spec 3.1.3 Keys
+                rv[i] = KEY_TYPE_ARRAY + subArray;
+            } else
+                return null; // No supported type
         }
         return JSON.stringify(rv);
     }
@@ -283,23 +296,50 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
             var type = item[0];
             var encoded = item.substr(1);
             var value = undefined;
-            if (type === "D")
-                value = new Date(uniback(encoded, 4, 0));
-            else if (type === "J")
-                value = JSON.parse(encoded);
-            else if (type === "S")
+            if (type === KEY_TYPE_STRING)
                 value = encoded;
-            else if (type === "N")
-                value = uniback(encoded, 5, 4, true);
-            else if (type === "n")
+            else if (type === KEY_TYPE_POSNUMBER)
                 value = uniback(encoded, 5, 4, false);
-            else if (type === "u")
-                value = undefined;
-            else if (type === "0")
-                value = null
+            else if (type === KEY_TYPE_NEGNUMBER)
+                value = uniback(encoded, 5, 4, true);
+            else if (type === KEY_TYPE_DATE)
+                value = new Date(uniback(encoded, 4, 0));
+            else if (type === KEY_TYPE_INFINITY)
+                value = Infinity;
+            else if (type === KEY_TYPE_NEGINFINITY)
+                value = -Infinity;
+            else if (type === KEY_TYPE_ARRAY)
+                value = stringToCompound(encoded);
             rv[i] = value;
         }
         return rv;
+    }
+
+    function isValidKey(key, parents) {
+        /// <summary>
+        /// 
+        /// </summary>
+        /// <param name="key"></param>
+        /// <param name="parents" optional="true" type="Array" elementType="Array">
+        /// If key is contained by an parent array key, supply an array
+        /// containing the parent array and its parents</param>
+        /// <returns type=""></returns>
+        return (
+            typeof (key) === 'string' ||
+            (typeof (key) === 'number' && !isNaN(key)) ||
+            (key instanceof Date && !isNaN(key.getTime())) ||
+            (Array.isArray(key) && isValidArrayKey(key, parents || []))
+        );
+    }
+
+    function isValidArrayKey(a, parents) {
+        /// <param name="a" type="Array"></param>
+        /// <param name="parents" type="Array" elementType="Array"></param>
+        var parentsAndSelf = parents ? parents.concat(a) : [a];
+        return a.every(function (key) {
+            if (key === a || (parents && parents.indexOf(key) !== -1)) return false;// Accoriding to IDB Spec 3.1.3 Keys
+            return isValidKey(key, parents ? parents.concat(a) : [a]);
+        });
     }
 
     function getMeta(store) {
@@ -332,14 +372,20 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
         return key;
     }
 
-    function bulk(operations, cb) {
+    function bulk(operations, cb, options) {
         /// <summary>
         ///     Execute given array of operations and the call given callback
         /// </summary>
         /// <param name="operations" type="Array" elementType="IOperation">Operations to execute</param>
         /// <param name="cb" value="function(successCount){}"></param>
         var nRequests = operations.length,
-            successCount = 0;
+            successCount = 0,
+            swallowErrors = options.swallowErrors === undefined || options.swallowErrors === true;
+
+        if (nRequests === 0) {
+            cb();
+            return;
+        }
 
         operations.forEach(function(item) {
             var req = OrigProtos.ObjectStore[item.op].apply(item.store, item.args);
@@ -348,15 +394,17 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
                 ++successCount;
                 checkComplete();
             }
-            req.onerror = function(ev) {
-                ev.stopPropagation();
-                ev.preventDefault();
+            req.onerror = function (ev) {
+                if (swallowErrors) {
+                    ev.stopPropagation();
+                    ev.preventDefault();
+                }
                 item.error = ev.target.error;
                 checkComplete();
             }
         });
 
-        function checkComplete(ev) {
+        function checkComplete() {
             if (--nRequests === 0 && cb) cb(successCount);
         }
     }
@@ -376,19 +424,26 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
         var idxStore = transaction.objectStore(indexMeta.idxStoreName);
         var idx, idxPrimKey;
         if (indexMeta.compound) {
-            idx = { fk: primKey, k: compoundToString(idxKeys) };
-            idxPrimKey = compoundToString([idx.fk, idx.k]);
-            outOperations.push({ store: idxStore, op: "add", args: [idx, idxPrimKey] });
+            var key = compoundToString(idxKeys);
+            if (key) {
+                idx = { fk: primKey, k: key };
+                idxPrimKey = compoundToString([primKey, key]);
+                outOperations.push({ store: idxStore, op: "add", args: [idx, idxPrimKey] });
+            }
         } else if (indexMeta.multiEntry) {
             if (!Array.isArray(idxKeys)) {
-                idx = { fk: primKey, k: idxKeys };
-                idxPrimKey = compoundToString([idx.fk, idx.k]);
-                outOperations.push({ store: idxStore, op: "add", args: [idx, idxPrimKey] });
+                if (isValidKey(idxKeys)) {
+                    idx = { fk: primKey, k: idxKeys };
+                    idxPrimKey = compoundToString([idx.fk, idx.k]);
+                    outOperations.push({ store: idxStore, op: "add", args: [idx, idxPrimKey] });
+                }
             } else {
                 idxKeys.forEach(function(idxKey) {
-                    idx = { fk: primKey, k: idxKey };
-                    idxPrimKey = compoundToString([idx.fk, idx.k]);
-                    outOperations.push({ store: idxStore, op: "add", args: [idx, idxPrimKey]});
+                    if (isValidKey(idxKey)) {
+                        idx = { fk: primKey, k: idxKey };
+                        idxPrimKey = compoundToString([idx.fk, idx.k]);
+                        outOperations.push({ store: idxStore, op: "add", args: [idx, idxPrimKey] });
+                    }
                 });
             }
         }
@@ -795,7 +850,8 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
         // The operation is a bulk of predefined operations ('add', 'put', or 'delete')
         var operations = item.ops;
         // 1. Extract index keys from put() and add() operations
-        extractIndexKeys(operations);
+        //extractIndexKeys(operations); Not needed I think
+        // TODO: Before performing the bulk, first detect violation of unique indexes and mark those inserts as failed.
         // 2. Execute the main operations in a bulk. Successs/Errors stored in each operation item.
         bulk(operations, function (successCount) {
             // 3. Get meta operations to execute:
@@ -907,8 +963,9 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
                     .map(function(name) {
                         return meta.indexes[name];
                     });
+
             if (op === 'add') {
-                indexes.forEach(function(indexMeta) {
+                indexes.forEach(function (indexMeta) {
                     generateIndexingOperations(transaction, operation.args[0], primKey, indexMeta, metaOperations);
                 });
             } else if (op == 'put') {
@@ -1210,16 +1267,33 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
                 blockingManystepsOperation(store.transaction, null, function (done) {
                     var indexingOperations = [];
                     var req = OrigProtos.ObjectStore.openCursor.call(store);
+                    // If error, let us be done, but don't swallow the error. Transaction should abort actually.
+                    req.onerror = done;
                     req.onsuccess = function (ev) {
                         var cursor = req.result;
                         if (cursor) {
-                            generateIndexingOperations(transaction, cursor.value, cursor.primaryKey, indexMeta, indexingOperations);
+                            try {
+                                generateIndexingOperations(transaction, cursor.value, cursor.primaryKey, indexMeta, indexingOperations);
+                                if (indexingOperations.length > 1000) {
+                                    // Since we are iterating the entire table, existing data may
+                                    // theoretically be too huge for RAM.
+                                    // Let's execute parts of the indexing operations here and continue iterating the object store.
+                                    // Reason for null: No need to be notified back when done. We'll do that in the final bulk().
+                                    // (IDB spec requires all onsuccess/onerror to be called in the same order as the operation was called)
+                                    // Reason for swallowErrors=false: IDB spec requires upgradeTransaction to abort if an index fails to
+                                    // be added. Such situation could occur if the index is marked as unique and two objects have same key.
+                                    bulk(indexingOperations, null, { swallowErrors: false });
+                                    indexingOperations = [];
+                                }
+                            } catch (e) {
+                                console.error(e);
+                                store.transaction.abort();
+                            }
                             cursor.continue();
                         } else {
-                            bulk(indexingOperations, done);
+                            bulk(indexingOperations, done, { swallowErrors: false });
                         }
                     }
-                    req.onerror = ignore("index existing data in createIndex()", done);
                 });
 
                 return new IEGAPIndex(keyIndex, store, name, keyPath, props.multiEntry);
@@ -1614,4 +1688,4 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
     }
 
     Constructor();
-})(window.indexedDB || window.msIndexedDB);
+})(typeof(indexedDB) !== 'undefined' ? indexedDB : msIndexedDB);
