@@ -1,4 +1,5 @@
-if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
+if (navigator.userAgent.indexOf("Trident/") !== -1)
+(function(idb, undefined) {
     /* IndexedDB IE Gap polyfill (idb-iegap.js)
      *
      * $Format:%d$
@@ -75,15 +76,15 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
 
     function override(orig, overrider) {
         if (typeof orig === 'object')
-            // map of properties to override
-            Object.keys(overrider).forEach(function (prop) {
+        // map of properties to override
+            Object.keys(overrider).forEach(function(prop) {
                 var pd = Object.getOwnPropertyDescriptor(orig, prop);
                 var newPd = overrider[prop](pd);
                 if (newPd.hasOwnProperty('value') && newPd.writable !== false) newPd.writable = true;
                 Object.defineProperty(orig, prop, extend({ configurable: true, enumerable: true }, newPd));
-            }); 
+            });
         else
-            // simple function
+        // simple function
             return overrider(orig);
     }
 
@@ -119,14 +120,16 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
                 var currentKeyPath = keyPath.substr(0, period);
                 var remainingKeyPath = keyPath.substr(period + 1);
                 if (remainingKeyPath === "")
-                    if (value === undefined) delete obj[currentKeyPath]; else obj[currentKeyPath] = value;
+                    if (value === undefined) delete obj[currentKeyPath];
+                    else obj[currentKeyPath] = value;
                 else {
                     var innerObj = obj[currentKeyPath];
                     if (!innerObj) innerObj = (obj[currentKeyPath] = {});
                     setByKeyPath(innerObj, remainingKeyPath, value);
                 }
             } else {
-                if (value === undefined) delete obj[keyPath]; else obj[keyPath] = value;
+                if (value === undefined) delete obj[keyPath];
+                else obj[keyPath] = value;
             }
         }
     }
@@ -158,7 +161,7 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
     }
 
     function fail(op, cb, bIgnore, bFatal) {
-        return function (ev) {
+        return function(ev) {
             var msg = op && (bFatal ? "Fatal" : "Warning") + ": IEGap polyfill failed to " + (op.call ? op() : op) + ": " + ev.target.error;
             if (op) console.error(msg);
             if (bIgnore) {
@@ -240,7 +243,7 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
             rv += String.fromCharCode(charCode);
             --currPow;
         }
-        
+
         return rv;
     }
 
@@ -283,7 +286,7 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
             rv = new Array(l);
         for (var i = 0; i < l; ++i) {
             var part = a[i];
-            if (typeof part === 'string') 
+            if (typeof part === 'string')
                 rv[i] = KEY_TYPE_STRING + part;
             else if (typeof part === 'number') {
                 if (isNaN(part)) return null;
@@ -352,8 +355,8 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
         /// <param name="a" type="Array"></param>
         /// <param name="parents" type="Array" elementType="Array"></param>
         var parentsAndSelf = parents ? parents.concat(a) : [a];
-        return a.every(function (key) {
-            if (key === a || (parents && parents.indexOf(key) !== -1)) return false;// Accoriding to IDB Spec 3.1.3 Keys
+        return a.every(function(key) {
+            if (key === a || (parents && parents.indexOf(key) !== -1)) return false; // Accoriding to IDB Spec 3.1.3 Keys
             return isValidKey(key, parents ? parents.concat(a) : [a]);
         });
     }
@@ -363,6 +366,7 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
         /// <returns type="IStoreMeta"></returns>
         return store.transaction.db._iegapmeta.stores[store.name];
     }
+
     function setMeta(db, transaction, value) {
         /// <param name="db" type="IDBDatabase"></param>
         /// <param name="transaction" type="IDBTransaction"></param>
@@ -410,7 +414,7 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
                 ++successCount;
                 checkComplete();
             }
-            req.onerror = function (ev) {
+            req.onerror = function(ev) {
                 if (swallowErrors) {
                     ev.stopPropagation();
                     ev.preventDefault();
@@ -482,7 +486,7 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
             /// <param name="iegIndex" type="IEGAPIndex"></param>
             /// <param name="range" type="IDBKeyRange"></param>
             /// <param name="dir" type="String"></param>
-            return new BlockableIDBRequest(iegIndex, iegIndex.objectStore, function (success, error) {
+            return new BlockableIDBRequest(iegIndex, iegIndex.objectStore, function(success, error) {
                 var compound = iegIndex._compound,
                     compoundPrimKey = Array.isArray(iegIndex.objectStore.keyPath);
                 if (compound && Array.isArray(range)) range = new IEGAPKeyRange(range, range);
@@ -499,7 +503,7 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
                         if (cursor) {
                             var getreq = iegIndex._store.get(cursor.value.fk);
                             getreq.onerror = error;
-                            getreq.onsuccess = function () {
+                            getreq.onsuccess = function() {
                                 if (!getreq.result) return cursor.continue(); // An index is about to be deleted but it hasnt happened yet.
                                 var key = compound ? stringToCompound(cursor.key) : cursor.key;
                                 var primKey = compoundPrimKey ? stringToCompound(cursor.value.fk) : cursor.value.fk;
@@ -521,7 +525,7 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
         }
 
         return {
-            count: function (key) {
+            count: function(key) {
                 if (arguments.length > 0) arguments[0] = parseKeyParam(key);
                 var thiz = this;
                 return new BlockableIDBRequest(this, this.objectStore, function(success, error) {
@@ -532,7 +536,7 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
             },
             get: function(key) {
                 var thiz = this;
-                return new BlockableIDBRequest(this, this.objectStore, function (success, error) {
+                return new BlockableIDBRequest(this, this.objectStore, function(success, error) {
                     var req = thiz._idx.get(parseKeyParam(key));
                     // First request the meta-store for this index
                     req.onsuccess = function(ev) {
@@ -541,7 +545,7 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
                         if (foreignKey) {
                             // Key found. Do a new request on the origin store based on the foreignKey found in meta-store.
                             req = thiz.objectStore.get(foreignKey);
-                            req.onsuccess = function () {
+                            req.onsuccess = function() {
                                 success(ev, req.result);
                             }
                             req.onerror = error;
@@ -555,9 +559,9 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
             },
             getKey: function(key) {
                 var thiz = this;
-                return new BlockableIDBRequest(this, this.objectStore, function (success, error) {
+                return new BlockableIDBRequest(this, this.objectStore, function(success, error) {
                     var req = thiz._idx.get(parseKeyParam(key));
-                    req.onsuccess = function (ev) {
+                    req.onsuccess = function(ev) {
                         var res = ev.target.result;
                         success(ev, res && res.fk);
                     }
@@ -585,7 +589,7 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
 
     extend(IEGAPCursor.prototype, function() {
         return {
-            advance: function (n) {
+            advance: function(n) {
                 var thiz = this;
                 whenUnblocked(this._store.transaction, function() {
                     thiz._cursor.advance(n);
@@ -600,11 +604,11 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
                     return thiz._cursor.continue(key);
                 });
             },
-            "delete": function () {
+            "delete": function() {
                 // lock not needed. this._store.delete() will target our rewritten delete
-                return this._store.delete(this.primaryKey);// Will automatically delete and iegap index items as well.
+                return this._store.delete(this.primaryKey); // Will automatically delete and iegap index items as well.
             },
-            update: function (newValue) {
+            update: function(newValue) {
                 // lock not needed. this._store.put() will target our rewritten put
                 return this._store.keyPath ? this._store.put(newValue) : this._store.put(newValue, this.primaryKey);
             }
@@ -617,17 +621,17 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
 
     extend(IEGAPEventTarget.prototype, function() {
         return {
-            addEventListener: function (type, listener) {
+            addEventListener: function(type, listener) {
                 this._el[type] ? this._el[type].push(listener) : this._el[type] = [listener];
             },
-            removeEventListener: function (type, listener) {
+            removeEventListener: function(type, listener) {
                 var listeners = this._el[type];
                 if (listeners) {
                     var pos = listeners.indexOf(listener);
                     if (pos !== -1) listeners.splice(pos, 1);
                 }
             },
-            dispatchEvent: function (event) {
+            dispatchEvent: function(event) {
                 var listener = this["on" + event.type];
                 try {
                     if (listener && listener(event) === false) return false;
@@ -659,14 +663,14 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
         this.transaction = transaction;
         this.readyState = "pending";
         var thiz = this;
-        var eventTargetProp = { get: function () { return thiz; } };
-        execute(function (e, result) {
+        var eventTargetProp = { get: function() { return thiz; } };
+        execute(function(e, result) {
             //if (e.type !== 'success') Object.defineProperty(e, "type", { value: "success" });
             thiz.result = result;
             Object.defineProperty(e, "target", eventTargetProp);
             thiz.readyState = "done";
             thiz.dispatchEvent(e);
-        }, function (e, err) {
+        }, function(e, err) {
             //if (e.type !== 'error') Object.defineProperty(e, "type", { value: "error" });
             thiz.error = err || e.target.error;
             Object.defineProperty(e, "target", eventTargetProp);
@@ -677,6 +681,7 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
             thiz.dispatchEvent(e);
         }, this);
     }
+
     derive(IEGAPRequest).from(IEGAPEventTarget).extend({
         onsuccess: null,
         onerror: null,
@@ -688,6 +693,7 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
     function IEGAPOpenRequest(source, transaction, execute) {
         IEGAPRequest(source, transaction, execute);
     }
+
     derive(IEGAPOpenRequest).from(IEGAPRequest).extend({
         onblocked: null,
         onupgradeneeded: null
@@ -707,6 +713,7 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
             });
         });
     }
+
     derive(BlockableIDBRequest).from(IEGAPRequest);
 
     //
@@ -735,7 +742,7 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
         /// </summary>
         /// <param name="store" type="IDBObjectStore"></param>
         /// <param name="operation" value="{store: IDBObjectStore.prototype, op:'', args:[], resultMapper: function(){}}"></param>
-        IEGAPRequest(operation.store, operation.store.transaction, function (success, error, request) {
+        IEGAPRequest(operation.store, operation.store.transaction, function(success, error, request) {
             var store = operation.store,
                 transaction = store.transaction,
                 queue = transaction.$iegQue || (transaction.$iegQue = []),
@@ -775,6 +782,7 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
             }
         });
     }
+
     derive(BlockingWriteRequest).from(IEGAPRequest);
 
     function saveAutoIncs(transaction) {
@@ -792,11 +800,12 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
         if (nRequests === 0) return cb();
         var autoIncStore = transaction.objectStore(STORENAME_AUTOINC);
         storeNames.forEach(function(storeName) {
-            autoIncStore.get(storeName).onsuccess = function (ev) {
+            autoIncStore.get(storeName).onsuccess = function(ev) {
                 transaction.$iegapAutoIncs[storeName] = ev.target.result;
                 checkComplete();
             }
         });
+
         function checkComplete() {
             if (--nRequests) cb();
         }
@@ -805,6 +814,14 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
     function newAutoInc(store) {
         /// <param name="store" type="IDBObjectStore"></param>
         return store.transaction.$iegapAutoIncs[store.name]++;
+    }
+
+    function updateAutoInc(store, key) {
+        if (!isNaN(key)) {
+            var records = store.transaction.$iegapAutoIncs;
+            var currentKey = records[store.name];
+            if (key >= currentKey) records[store.name] = key + 1;
+        }
     }
 
     //
@@ -914,15 +931,16 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
         /// <param name="transaction" type="IDBTransaction"></param>
         /// <param name="operations" value="[{result: '', error: null, store: IDBObjectStore.prototype, op:'delete/add/put', args:[], key: null, trigSuccess: function(){}, trigError: function(){}, req: BlockingManystepsRequest.prototype}]"></param>
         operations.forEach(function (operation) {
-            if (operation.key === undefined &&
-                (operation.op === 'add' || operation.op === 'put') &&
-                operation.store.autoIncrement)
-            {
-                operation.key = newAutoInc(operation.store);
-                if (operation.store.keyPath)
-                    setByKeyPath(operation.args[0], operation.store.keyPath, operation.key);
-                else
-                    operation.args[1] = operation.key;
+            if ((operation.op === 'add' || operation.op === 'put') && operation.store.autoIncrement) {
+                if (operation.key === undefined) {
+                    operation.key = newAutoInc(operation.store);
+                    if (operation.store.keyPath)
+                        setByKeyPath(operation.args[0], operation.store.keyPath, operation.key);
+                    else
+                        operation.args[1] = operation.key;
+                } else {
+                    updateAutoInc(operation.store, operation.key);
+                }
             }
         });
     }
