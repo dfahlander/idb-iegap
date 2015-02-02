@@ -157,14 +157,27 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
         return rv;
     }
 
-    function ignore(op, cb) {
+    function fail(op, cb, bIgnore, bFatal) {
         return function (ev) {
-            if (op) console.log("Warning: IEGap polyfill failed to " + (op.call ? op() : op) + ": " + ev.target.error);
-            ev.stopPropagation();
-            ev.preventDefault();
-            if (cb) cb(ev);
-            return false;
+            var msg = op && (bFatal ? "Fatal" : "Warning") + ": IEGap polyfill failed to " + (op.call ? op() : op) + ": " + ev.target.error;
+            if (op) console.error(msg);
+            if (bIgnore) {
+                ev.stopPropagation();
+                ev.preventDefault();
+            }
+            if (cb)
+                cb(ev);
+            else if (!bIgnore)
+                throw new Error(msg);
         }
+    }
+
+    function fatal(op) {
+        return fail(op, null, false, true);
+    }
+
+    function ignore(op, cb) {
+        return fail(op, cb, true);
     }
 
     //
@@ -175,6 +188,9 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
         IDBObjectStore = window.IDBObjectStore,
         IDBDatabase = window.IDBDatabase,
         IDBIndex = window.IDBIndex;
+
+    var STORENAME_META = "$iegapmeta",
+        STORENAME_AUTOINC = "$iegapAutoIncs";
 
     var OrigProtos = {
         DB: {
@@ -383,7 +399,7 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
             swallowErrors = options.swallowErrors === undefined || options.swallowErrors === true;
 
         if (nRequests === 0) {
-            cb();
+            if (cb) cb();
             return;
         }
 
@@ -409,7 +425,7 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
         }
     }
 
-    function generateIndexingOperations(transaction, obj, primKey, indexMeta, outOperations) {
+    function generateIndexingOperations(transaction, obj, primKey, indexMeta, outOperations, mainOperation) {
         /// <summary>
         /// 
         /// </summary>
@@ -428,21 +444,21 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
             if (key) {
                 idx = { fk: primKey, k: key };
                 idxPrimKey = compoundToString([primKey, key]);
-                outOperations.push({ store: idxStore, op: "add", args: [idx, idxPrimKey] });
+                outOperations.push({ store: idxStore, op: "add", args: [idx, idxPrimKey], mainOp: mainOperation });
             }
         } else if (indexMeta.multiEntry) {
             if (!Array.isArray(idxKeys)) {
                 if (isValidKey(idxKeys)) {
                     idx = { fk: primKey, k: idxKeys };
                     idxPrimKey = compoundToString([idx.fk, idx.k]);
-                    outOperations.push({ store: idxStore, op: "add", args: [idx, idxPrimKey] });
+                    outOperations.push({ store: idxStore, op: "add", args: [idx, idxPrimKey], mainOp: mainOperation });
                 }
             } else {
                 idxKeys.forEach(function(idxKey) {
                     if (isValidKey(idxKey)) {
                         idx = { fk: primKey, k: idxKey };
                         idxPrimKey = compoundToString([idx.fk, idx.k]);
-                        outOperations.push({ store: idxStore, op: "add", args: [idx, idxPrimKey] });
+                        outOperations.push({ store: idxStore, op: "add", args: [idx, idxPrimKey], mainOp: mainOperation });
                     }
                 });
             }
@@ -634,43 +650,6 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
         }
     });
 
-    function IEGAPEvent(type) {
-        var ev = document.createEvent('Event');
-        ev.initEvent(type, true, true);
-        var defaultPrevented = false,
-            propagationStopped = false;
-
-        Object.defineProperties(ev, {
-            preventDefault: {
-                value: function () {
-                    defaultPrevented = true;
-                }
-            },
-            defaultPrevented: {
-                get: function () {
-                    return defaultPrevented;
-                }
-            },
-            stopPropagation: {
-                value: function () {
-                    propagationStopped = true;
-                }
-            },
-            propagationStopped: {
-                get: function () {
-                    return propagationStopped;
-                }
-            },
-            /*currentTarget: {
-                get: function () {
-                    return ev.target;
-                }
-            }*/
-        });
-
-        return ev;
-    }
-
     //
     // IEGAP version of IDBRequest
     //
@@ -741,25 +720,10 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
             queue.push(fn);
     }
 
-    // TODO: Remove reusableKeyGetter!
-    function blockingManystepsOperation(transaction, reusableKeyGetter, fn) {
+    function blockingManystepsOperation(transaction, fn) {
         var queue = transaction.$iegQue || (transaction.$iegQue = []);
-        var lastItem = queue[queue.length - 1];
-        if (queue.length === 0 || !reusableKeyGetter || !reusableKeyGetter() || lastItem.reusableKeyGetter() != reusableKeyGetter()) {
-            // Put it on queue, unless the reusableKey is the same, and
-            // the item has not yet started to execute (queue.length >= 2)
-            // reusableKey will optimize the following scenario when createIndex()
-            // was called several times after each other. Only one single reindexer
-            // will have to execute:
-            //   store.createIndex(...);
-            //   store.createIndex(...);
-            //   ...
-            queue.push({
-                execute: fn,
-                reusableKeyGetter: reusableKeyGetter
-            });
-            if (queue.length === 1) executeQueue(transaction);
-        }
+        queue.push({ execute: fn });
+        if (queue.length === 1) executeQueue(transaction);
     }
 
     //
@@ -782,7 +746,8 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
             extend(operation, {
                 trigSuccess: success,
                 trigError: error,
-                req: request
+                req: request,
+                key: implicitKey
             });
             // Clone the object according to IDB specification (put() and add() has object as first argument)
             if (op != 'delete') operation.args[0] = deepClone(operation.args[0]);
@@ -798,18 +763,49 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
                 // to see which indexes should be deleted and which should be added. That info would be invalid
                 // the bulk contained multiple operations on the same key because the second operation would be
                 // based on the state before the first operation's indexes has been executed.
-                var queueItem = { ops: [operation], keys: {} };
+                var queueItem = { ops: [operation], keys: {}, autoIncStores: {} };
                 if (storeNameColonKey) queueItem.keys[storeNameColonKey] = true;
+                else queueItem.autoIncStores[store.name] = true;
                 queue.push(queueItem);
                 if (queue.length == 1) executeQueue(store.transaction);
             } else {
                 lastItem.ops.push(operation);
                 if (storeNameColonKey) lastItem.keys[storeNameColonKey] = true;
+                else lastItem.autoIncStores[store.name] = true;
             }
         });
     }
     derive(BlockingWriteRequest).from(IEGAPRequest);
 
+    function saveAutoIncs(transaction) {
+        Object.keys(transaction.$iegapAutoIncs).forEach(function(storeName) {
+            OrigProtos.ObjectStore.put.apply(transaction.objectStore(STORENAME_AUTOINC),
+                { currentAutoInc: transaction.$iegapAutoIncs[storeName] }, storeName)
+                .onerror = fatal("saving current autoIncs");
+        });
+    }
+
+    function loadAutoIncs(transaction, storeNames, cb) {
+        /// <param name="transaction" type="IDBTransaction"></param>
+        /// <param name="storeNames" type="Array" elementType="String"></param>
+        var nRequests = storeNames.length;
+        if (nRequests === 0) return cb();
+        var autoIncStore = transaction.objectStore(STORENAME_AUTOINC);
+        storeNames.forEach(function(storeName) {
+            autoIncStore.get(storeName).onsuccess = function (ev) {
+                transaction.$iegapAutoIncs[storeName] = ev.target.result;
+                checkComplete();
+            }
+        });
+        function checkComplete() {
+            if (--nRequests) cb();
+        }
+    }
+
+    function newAutoInc(store) {
+        /// <param name="store" type="IDBObjectStore"></param>
+        return store.transaction.$iegapAutoIncs[store.name]++;
+    }
 
     //
     // runNextOperationBulk - engine that handles read/write queue
@@ -825,13 +821,15 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
         /// </summary>
         /// <param name="transaction" type="IDBTransaction"></param>
         var queue = transaction.$iegQue;
-        if (!queue || queue.length === 0) return;
+        if (!queue || queue.length === 0) {
+            return saveAutoIncs(transaction);
+        }
         var item = queue[0];
         while (typeof item == 'function') {
             // A reader found. Just call it, and the next, and the next... until empty or a "blocker" found.
             queue.shift();
             item();
-            if (queue.length == 0) return;
+            if (queue.length == 0) return saveAutoIncs(transaction);
             item = queue[0];
         }
 
@@ -849,116 +847,97 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
 
         // The operation is a bulk of predefined operations ('add', 'put', or 'delete')
         var operations = item.ops;
-        // 1. Extract index keys from put() and add() operations
-        //extractIndexKeys(operations); Not needed I think
-        // TODO: Before performing the bulk, first detect violation of unique indexes and mark those inserts as failed.
-        // 2. Execute the main operations in a bulk. Successs/Errors stored in each operation item.
-        bulk(operations, function (successCount) {
+        // 1. Load current autoIncrement numbers for all operations that will require such
+        loadAutoIncs(transaction, Object.keys(item.autoIncStores), function () {
+            // 2. Resolve undefined keys with autoIncremented keys
+            resolveUndefinedKeys(transaction, operations);
             // 3. Get meta operations to execute:
-            getMetaOperations(transaction, operations, function (metaOperations) {
+            getMetaOperations(transaction, operations, function(metaOperations) {
                 // 4. Execute all meta-operations:
                 bulk(metaOperations, function () {
-                    // 5. Trigger onsuccess / onerror for each finished operation
-                    var transactionAborted = false;
-                    var nRequests = 1;
-                    operations.forEach(function (operation) {
-                        /// <param name="operation" value="{result: '', error: null, indexKeys: [{ idxStoreName: '', key: '' }], store: IDBObjectStore.prototype, op:'delete/add/put', args:[], trigSuccess: function(){}, trigError: function(){}, req: BlockingManystepsRequest.prototype}"></param>
-                        if (transactionAborted) {
-                            operation.trigError(new IEGAPEvent('error'), { name: "AbortError", message: "Transaction aborted" });
-                        } else if (operation.error) {
-                            var fakeEvent = new IEGAPEvent('error');
-                            operation.trigError(fakeEvent, operation.error);
-                            if (fakeEvent.defaultPrevented && fakeEvent.propagationStopped) return; // Just continue
-                            // Trigger the error for real again and make sure to preventDefault() only
-                            // if this fake event was defaultPrevented. Same for propagationStopped!
-                            // If not defaultPrevented, transaction will cancel!
-                            if (!fakeEvent.defaultPrevented)
-                                transactionAborted = true;
-
-                            ++nRequests;
-                            // Redo the operation to trigger a fresh error
-                            var replayedFailingRequest =
-                                OrigProtos.ObjectStore[operation.op].apply(operation.store, operation.args);
-
-                            replayedFailingRequest.onerror = function(realEvent) {
-                                if (fakeEvent.defaultPrevented) realEvent.preventDefault();
-                                if (fakeEvent.propagationStopped) realEvent.stopPropagation();
-                                checkComplete();
-                            }
-                            replayedFailingRequest.onsuccess = function(realEvent) {
-                                console.error("Request didnt fail when replayed! Oops! Fatal! Make sure transaction is aborted then...");
-                                transaction.abort();
-                                transactionAborted = true;
-                                checkComplete();
-                            }
-                        } else {
-                            operation.trigSuccess(new IEGAPEvent('success'), operation.result);
+                    // 5. Handle failed meta-operations (reverting other meta-operations and modifying main-op to result in DataError)
+                    handleFailedMetaOperations(metaOperations, operations);
+                    // 6. Execute the main operations in a bulk.
+                    operations.forEach(function(operation) {
+                        var req = OrigProtos.ObjectStore[operation.op].apply(operation.store, operation.args);
+                        req.onsuccess = function(ev) {
+                            return operation.trigSuccess(ev,
+                                operation.resultMapper ?
+                                operation.resultMapper(req.result) : req.result);
+                        }
+                        req.onerror = function(ev) {
+                            return operation.trigError(ev, req.error);
                         }
                     });
-                    checkComplete();
 
-                    function checkComplete() {
-                        if (--nRequests === 0) {
-                            queue.shift();
-                            executeQueue(transaction);
-                        }
-                    }
+                    // 7. Finally shift the queue and execute next item, if any.
+                    queue.shift();
+                    executeQueue(transaction);
                 });
             });
         });
     }
 
-    // TODO: THis might be redundant. Remove?
-    function extractIndexKeys(operations) {
-        /// <param name="operations" value="[{store: IDBObjectStore.prototype, op:'delete/add/put', args:[], onsuccess: function(){}, trigError: function(){}, req: BlockingManystepsRequest.prototype}]"></param>        
-        operations.forEach(function(operation) {
-            if (operation.op === 'add' || operation.op === 'put') {
-                var object = operation.args[0],
-                    store = operation.store,
-                    meta = getMeta(store),
-                    indexKeys = (operation.indexKeys = []);
-                var indexes = Object.keys(meta.indexes)
-                    .map(function(name) { return meta.indexes[name]; });
+    function handleFailedMetaOperations(metaOperations, mainOperations) {
+        /// <param name="metaOperations" value="[{result: '', error: null, store: IDBObjectStore.prototype, op:'delete/add', args:[], mainOp: {store: IDBObjectStore.prototype, op: '', args: [], key: null}}]"></param>
+        /// <param name="mainOperations" value="[{result: '', error: null, store: IDBObjectStore.prototype, op:'delete/add/put', args:[], key: null, trigSuccess: function(){}, trigError: function(){}, req: BlockingManystepsRequest.prototype}]"></param>
+        metaOperations.forEach(function(metaOperation) {
+            if (metaOperation.error) {
+                var mainOperation = metaOperation.mainOp;
+                // Make the main operation trigger DataError
+                mainOperation.op = "delete";
+                mainOperation.args = [undefined];
+                // Revert all other index-operations that applies to the same main operation
+                var revertOperations = metaOperations
+                    .filter(function(mop) { return mop.mainOp === mainOperation && mop !== metaOperation; })
+                    .map(revertMetaOperation);
+                bulk(revertOperations);
+            }
+        });
+    }
 
-                indexes.forEach(function(indexSpec) {
-                    var idxKeys = getByKeyPath(object, indexSpec.keyPath),
-                        idxStoreName = indexSpec.idxStoreName;
-                    if (idxKeys !== undefined && idxKeys !== null) {
-                        if (indexSpec.multiEntry) {
-                            if (Array.isArray(idxKeys)) {
-                                // the result of evaluating the index's key path yields an Array
-                                idxKeys.forEach(function(idxKey) {
-                                    indexKeys.push({ idxStoreName: idxStoreName, key: idxKey });
-                                });
-                            } else {
-                                // the result of evaluating the index's key path doesn't yield an Array
-                                indexKeys.push({ idxStoreName: idxStoreName, key: idxKeys });
-                            }
-                        } else if (indexSpec.compound) {
-                            if (idxKeys) {
-                                var stringifiedKey = compoundToString(idxKeys);
-                                indexKeys.push({ idxStoreName: idxStoreName, key: stringifiedKey });
-                            }
-                        } else {
-                            throw "IEGap assert error";
-                        }
-                    }
-                });
+    function revertMetaOperation(operation) {
+        /// <param name="operation" value="{store: IDBObjectStore.prototype, op: 'add/delete', args: []}"></param>
+        var idxPrimKey;
+        if (operation.op === 'delete') {
+            idxPrimKey = operation.args[0];
+            var array = stringToCompound(key);
+            var idxObj = { fk: array[0], k: array[1] };
+            return { store: op.store, op: 'add', args: [idxObj, idxPrimKey] };
+        } else {
+            idxPrimKey = operation.args[1];
+            return { store: op.store, op: 'delete', args: [idxPrimKey] };
+        }
+    }
+
+    function resolveUndefinedKeys(transaction, operations) {
+        /// <param name="transaction" type="IDBTransaction"></param>
+        /// <param name="operations" value="[{result: '', error: null, store: IDBObjectStore.prototype, op:'delete/add/put', args:[], key: null, trigSuccess: function(){}, trigError: function(){}, req: BlockingManystepsRequest.prototype}]"></param>
+        operations.forEach(function (operation) {
+            if (operation.key === undefined &&
+                (operation.op === 'add' || operation.op === 'put') &&
+                operation.store.autoIncrement)
+            {
+                operation.key = newAutoInc(operation.store);
+                if (operation.store.keyPath)
+                    setByKeyPath(operation.args[0], operation.store.keyPath, operation.key);
+                else
+                    operation.args[1] = operation.key;
             }
         });
     }
 
     function getMetaOperations(transaction, operations, cb) {
         /// <param name="transaction" type="IDBTransaction"></param>
-        /// <param name="operations" value="[{result: '', error: null, indexKeys: [{ idxStoreName: '', key: '' }], store: IDBObjectStore.prototype, op:'delete/add/put', args:[], onsuccess: function(){}, trigError: function(){}, req: BlockingManystepsRequest.prototype}]"></param>
+        /// <param name="operations" value="[{result: '', error: null, store: IDBObjectStore.prototype, op:'delete/add/put', args:[], key: null, trigSuccess: function(){}, trigError: function(){}, req: BlockingManystepsRequest.prototype}]"></param>
         var nRequests = 1,
             metaOperations = [];
 
         operations.forEach(function (operation) {
-            if (operation.error) return; // dont execute meta operation if main operation failed
+            //if (operation.error) return; // dont execute meta operation if main operation failed
             var op = operation.op,
                 meta = getMeta(operation.store),
-                primKey = operation.result,
+                primKey = operation.key,
                 indexes = Object.keys(meta.indexes)
                     .map(function(name) {
                         return meta.indexes[name];
@@ -990,7 +969,8 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
                             metaOperations.push({
                                 store: transaction.objectStore(indexMeta.idxStoreName),
                                 op: 'delete',
-                                args: [idxToDeletePk]
+                                args: [idxToDeletePk],
+                                mainOp: operation
                             });
                         });
                         checkComplete();
@@ -1005,7 +985,8 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
                             metaOperations.push({
                                 store: transaction.objectStore(indexMeta.idxStoreName),
                                 op: 'delete',
-                                args: [idxToDeletePk]
+                                args: [idxToDeletePk],
+                                mainOp: operation
                             });
                         });
                         checkComplete();
@@ -1093,9 +1074,13 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
                         var db = (iegReq.result = req.result);
                         db._upgradeTransaction = req.transaction; // Needed in IDBDatabase.prototype.deleteObjectStore(). Save to set like this because during upgrade transaction, no other transactions may live concurrently.
                         db._iegapmeta = { stores: {} };
-                        if (!OrigProtos.DB.objectStoreNames.get.apply(db).contains("$iegapmeta")) {
-                            var store = OrigProtos.DB.createObjectStore.call(db, "$iegapmeta");
-                            store.add(db._iegapmeta, 1);
+                        var existingStoreNames = OrigProtos.DB.objectStoreNames.get.apply(db);
+                        if (!existingStoreNames.contains(STORENAME_META)) {
+                            var metaStore = OrigProtos.DB.createObjectStore.call(db, STORENAME_META);
+                            metaStore.add(db._iegapmeta, 1);
+                        }
+                        if (!existingStoreNames.contains(STORENAME_AUTOINC)) {
+                            OrigProtos.DB.createObjectStore.call(db, STORENAME_AUTOINC);
                         }
                         ev.target = ev.currentTarget = iegReq;
                         iegReq.dispatchEvent(ev);
@@ -1242,10 +1227,10 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
                 var meta = db._iegapmeta;
                 if (props.multiEntry && Array.isArray(keyPath)) {
                     // IDB spec require us to throw DOMException.INVALID_ACCESS_ERR
-                    OrigProtos.DB.createObjectStore.call(db, "dummy", { keyPath: "", autoIncrement: true }); // Will throw DOMException.INVALID_ACCESS_ERR
+                    OrigProtos.DB.createObjectStore.call(db, name, { keyPath: true }); // Will throw DOMException.INVALID_ACCESS_ERR
                     throw "invalid access"; // fallback.
                 }
-                var idxStore = OrigProtos.DB.createObjectStore.call(db, idxStoreName, { autoIncrement: false });
+                var idxStore = OrigProtos.DB.createObjectStore.call(db, idxStoreName);
 
                 var storeMeta = meta.stores[store.name] || (meta.stores[store.name] = {indexes: {}, metaStores: [] });
                 var indexMeta = {
@@ -1264,7 +1249,12 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
                 setMeta(db, store.transaction, meta);
 
                 // Reindexing existing data:
-                blockingManystepsOperation(store.transaction, null, function (done) {
+                var highestKey = 0;
+                // Only need to start intercepting autoIncrement handling if this is the first time
+                // that an intercepted index was created.
+                // (or after all has been deleted and then first one created again)
+                var registerHighestKey = storeMeta.autoIncrement && storeMeta.metaStores.length === 1;
+                blockingManystepsOperation(store.transaction, function (done) {
                     var indexingOperations = [];
                     var req = OrigProtos.ObjectStore.openCursor.call(store);
                     // If error, let us be done, but don't swallow the error. Transaction should abort actually.
@@ -1273,7 +1263,12 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
                         var cursor = req.result;
                         if (cursor) {
                             try {
-                                generateIndexingOperations(transaction, cursor.value, cursor.primaryKey, indexMeta, indexingOperations);
+                                var primaryKey = cursor.primaryKey;
+
+                                if (registerHighestKey && !isNaN(primaryKey) && primaryKey > highestKey)
+                                    highestKey = cursor.primaryKey;
+
+                                generateIndexingOperations(transaction, cursor.value, primaryKey, indexMeta, indexingOperations);
                                 if (indexingOperations.length > 1000) {
                                     // Since we are iterating the entire table, existing data may
                                     // theoretically be too huge for RAM.
@@ -1292,6 +1287,10 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
                             cursor.continue();
                         } else {
                             bulk(indexingOperations, done, { swallowErrors: false });
+                            if (registerHighestKey)
+                                OrigProtos.ObjectStore.put.call(
+                                    store.transaction.objectStore(STORENAME_AUTOINC),
+                                    { currentAutoInc: highestKey + 1 }, store.name);
                         }
                     }
                 });
@@ -1340,7 +1339,7 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
                         store: this,
                         op: 'add',
                         args: [deepClone(value), key], // IDB Spec requires a clone at this point.
-                        resultMapper: function (r) { return stringToCompound(r); } // TODO: Execute resultsMapper somewhere!
+                        resultMapper: function (r) { return stringToCompound(r); }
                     });
                     //addReq = origFunc.call(this, value, key);
                 }
@@ -1584,13 +1583,14 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
         override(IDBDatabase.prototype, {
             transaction: function(origPropDescriptor) {
                 return {
-                    value: function(storeNames, mode) {
+                    value: function (storeNames, mode) {
                         storeNames = typeof storeNames == 'string' ? [storeNames] : [].slice.call(storeNames);
                         var storesWithMeta = this._iegapmeta.stores;
                         storeNames.forEach(function (name) {
                             var meta = storesWithMeta[name];
                             if (meta) storeNames = storeNames.concat(meta.metaStores);
                         });
+                        if (mode === "readwrite") storeNames.push(STORENAME_AUTOINC);
                         return origPropDescriptor.value.call(this, storeNames, mode || "readonly");
                     }
                 };
@@ -1606,7 +1606,7 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
                     }
                 }
             },
-            createObjectStore: function(origPropDescriptor) {
+            createObjectStore: function() {
                 return {
                     value: function (storeName, props) {
                         /// <summary>
@@ -1618,13 +1618,14 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
                         /// <returns type="IDBObjectStore"></returns>
                         var rv, compound = false;
                         if (!props || !Array.isArray(props.keyPath)) {
-                            rv = origPropDescriptor.value.apply(this, arguments);
+                            // Create the object store normally.
+                            rv = OrigProtos.DB.createObjectStore.apply(this, arguments);
                         } else {
                             compound = true;
                             if (props.autoIncrement) throw new RangeError("Cannot autoincrement compound key");
                             // Caller provided an array as keyPath. Need to polyfill:
                             // Create the ObjectStore without inbound keyPath:
-                            rv = origPropDescriptor.value.call(this, storeName);
+                            rv = OrigProtos.DB.createObjectStore.call(this, storeName);
                         }
                         // Then, store the keyPath array in our meta-data:
                         var meta = this._iegapmeta;
@@ -1649,6 +1650,7 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
                         });
                         delete meta.stores[storeName];
                         if (!this._upgradeTransaction) throw "assert error"; // In case we're not in upgrade phase, first call to origPropDescriptor.value.call(storeName) would can thrown already.
+                        this._upgradeTransaction.objectStore(STORENAME_AUTOINC).delete(storeName);
                         setMeta(this, this._upgradeTransaction, meta);
                     }
                 }
@@ -1673,6 +1675,7 @@ if (navigator.userAgent.indexOf("Trident/") !== -1) (function (idb, undefined) {
             metaStores: [''],
             indexes: { indexName: new IIndexMeta() }, // map<indexName,IIndexMeta>
             compound: false,
+            autoIncrement: false,
             keyPath: ['a', 'b.c'] // string or array of strings
         };
     }
