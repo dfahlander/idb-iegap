@@ -141,7 +141,7 @@ if (navigator.userAgent.indexOf("Trident/") !== -1)
     function deepClone(any) {
         if (!any || typeof any !== 'object') return any;
         var rv;
-        if (Array.isArray(any)) {
+        if (Array.isArray(any) || any instanceof DOMStringList) {
             rv = [];
             for (var i = 0, l = any.length; i < l; ++i) {
                 rv.push(deepClone(any[i]));
@@ -149,7 +149,7 @@ if (navigator.userAgent.indexOf("Trident/") !== -1)
         } else if (any instanceof Date) {
             rv = new Date();
             rv.setTime(any.getTime());
-        } else {
+        } else { // TODO: Clone Blobs and other special types?
             rv = any.constructor ? Object.create(any.constructor.prototype) : {};
             for (var prop in any) {
                 if (any.hasOwnProperty(prop)) {
@@ -392,15 +392,21 @@ if (navigator.userAgent.indexOf("Trident/") !== -1)
         return key;
     }
 
-    function bulk(operations, cb, options) {
+    function bulk(operations, options, cb) {
         /// <summary>
         ///     Execute given array of operations and the call given callback
         /// </summary>
         /// <param name="operations" type="Array" elementType="IOperation">Operations to execute</param>
         /// <param name="cb" value="function(successCount){}"></param>
+        if (arguments.length < 3) {
+            cb = arguments[1];
+            options = {swallowErrors: true};
+        }
         var nRequests = operations.length,
             successCount = 0,
-            swallowErrors = options.swallowErrors === undefined || options.swallowErrors === true;
+            swallowErrors = options.swallowErrors === true,
+            onerror = options.onerror,
+            onsuccess = options.onsuccess;
 
         if (nRequests === 0) {
             if (cb) cb();
@@ -412,14 +418,15 @@ if (navigator.userAgent.indexOf("Trident/") !== -1)
             req.onsuccess = function(ev) {
                 item.result = ev.target.result;
                 ++successCount;
+                if (onsuccess) onsuccess(ev, item);
                 checkComplete();
             }
-            req.onerror = function(ev) {
+            req.onerror = function (ev) {
+                item.error = ev.target.error;
                 if (swallowErrors) {
                     ev.stopPropagation();
                     ev.preventDefault();
-                }
-                item.error = ev.target.error;
+                } else if (onerror) onerror(ev, item);
                 checkComplete();
             }
         });
@@ -458,11 +465,15 @@ if (navigator.userAgent.indexOf("Trident/") !== -1)
                     outOperations.push({ store: idxStore, op: "add", args: [idx, idxPrimKey], mainOp: mainOperation });
                 }
             } else {
+                var addedKeys = {};
                 idxKeys.forEach(function(idxKey) {
                     if (isValidKey(idxKey)) {
                         idx = { fk: primKey, k: idxKey };
                         idxPrimKey = compoundToString([idx.fk, idx.k]);
-                        outOperations.push({ store: idxStore, op: "add", args: [idx, idxPrimKey], mainOp: mainOperation });
+                        if (!addedKeys.hasOwnProperty(idxKey)) { // Never add the same key twice
+                            outOperations.push({ store: idxStore, op: "add", args: [idx, idxPrimKey], mainOp: mainOperation });
+                            addedKeys[idxKey] = true;
+                        }
                     }
                 });
             }
@@ -742,12 +753,16 @@ if (navigator.userAgent.indexOf("Trident/") !== -1)
         /// </summary>
         /// <param name="store" type="IDBObjectStore"></param>
         /// <param name="operation" value="{store: IDBObjectStore.prototype, op:'', args:[], resultMapper: function(){}}"></param>
-        IEGAPRequest(operation.store, operation.store.transaction, function(success, error, request) {
+
+        // Clone all arguments first
+        operation.args = deepClone(operation.args);
+
+        IEGAPRequest(operation.store, operation.store.transaction, function (success, error, request) {
             var store = operation.store,
                 transaction = store.transaction,
                 queue = transaction.$iegQue || (transaction.$iegQue = []),
                 op = operation.op,
-                implicitKey = op == 'delete' ? operation.args[0] : store.keyPath ? getByKeyPath(operation.args[0]) : operation.args[1],
+                implicitKey = op == 'delete' ? operation.args[0] : operation.args.length > 1 ? operation.args[1] : store.keyPath && getByKeyPath(operation.args[0]),
                 storeNameColonKey = implicitKey !== undefined && store.name + ":" + implicitKey; // If autoIncrement, implicitKey may be undefined
 
             extend(operation, {
@@ -756,8 +771,6 @@ if (navigator.userAgent.indexOf("Trident/") !== -1)
                 req: request,
                 key: implicitKey
             });
-            // Clone the object according to IDB specification (put() and add() has object as first argument)
-            if (op != 'delete') operation.args[0] = deepClone(operation.args[0]);
 
             var lastItem;
             if (queue.length <= 1 || (lastItem = queue[queue.length - 1], lastItem.execute) || (lastItem.keys.hasOwnProperty(storeNameColonKey))) {
@@ -786,7 +799,7 @@ if (navigator.userAgent.indexOf("Trident/") !== -1)
     derive(BlockingWriteRequest).from(IEGAPRequest);
 
     function saveAutoIncs(transaction) {
-        Object.keys(transaction.$iegapAutoIncs).forEach(function(storeName) {
+        Object.keys(transaction.$iegapAutoIncs || {}).forEach(function(storeName) {
             OrigProtos.ObjectStore.put.apply(transaction.objectStore(STORENAME_AUTOINC),
                 { currentAutoInc: transaction.$iegapAutoIncs[storeName] }, storeName)
                 .onerror = fatal("saving current autoIncs");
@@ -796,14 +809,22 @@ if (navigator.userAgent.indexOf("Trident/") !== -1)
     function loadAutoIncs(transaction, storeNames, cb) {
         /// <param name="transaction" type="IDBTransaction"></param>
         /// <param name="storeNames" type="Array" elementType="String"></param>
+        if (!transaction.$iegapAutoIncs)
+            transaction.$iegapAutoIncs = {};
+
         var nRequests = storeNames.length;
         if (nRequests === 0) return cb();
+
         var autoIncStore = transaction.objectStore(STORENAME_AUTOINC);
-        storeNames.forEach(function(storeName) {
-            autoIncStore.get(storeName).onsuccess = function(ev) {
-                transaction.$iegapAutoIncs[storeName] = ev.target.result;
+
+        storeNames.forEach(function (storeName) {
+            if (transaction.$iegapAutoIncs.hasOwnProperty(storeName))
                 checkComplete();
-            }
+            else
+                autoIncStore.get(storeName).onsuccess = function(ev) {
+                    transaction.$iegapAutoIncs[storeName] = ev.target.result;
+                    checkComplete();
+                }
         });
 
         function checkComplete() {
@@ -872,24 +893,31 @@ if (navigator.userAgent.indexOf("Trident/") !== -1)
             getMetaOperations(transaction, operations, function(metaOperations) {
                 // 4. Execute all meta-operations:
                 bulk(metaOperations, function () {
-                    // 5. Handle failed meta-operations (reverting other meta-operations and modifying main-op to result in DataError)
+                    // 5. Handle failed meta-operations (reverting other meta-operations and modifying main-op to result in ConstraintError)
                     handleFailedMetaOperations(metaOperations, operations);
                     // 6. Execute the main operations in a bulk.
-                    operations.forEach(function(operation) {
-                        var req = OrigProtos.ObjectStore[operation.op].apply(operation.store, operation.args);
-                        req.onsuccess = function(ev) {
-                            return operation.trigSuccess(ev,
+                    bulk(operations, {
+                        onsuccess: function (ev, operation) {
+                            // 7A: If successful, trigger the success handler
+                            operation.trigSuccess(ev,
                                 operation.resultMapper ?
-                                operation.resultMapper(req.result) : req.result);
+                                operation.resultMapper(ev.target.result) : ev.target.result);
+                        },
+                        onerror: function (ev, operation) {
+                            // 7B: If error occurs, revert meta-operations and trigger the error now!
+                            if (operation.metaOps) {
+                                // There were indexing operations that were successfully performed
+                                // for this operation. They must be undone in case the error handler
+                                // will preventDefault (prohibiting transaction from aborting)
+                                bulk(operation.metaOps.map(revertMetaOperation));
+                            }
+                            operation.trigError(ev, ev.target.error);
                         }
-                        req.onerror = function(ev) {
-                            return operation.trigError(ev, req.error);
-                        }
+                    }, function() {
+                        // 8. Finally shift the queue and execute next item, if any.
+                        queue.shift();
+                        executeQueue(transaction);
                     });
-
-                    // 7. Finally shift the queue and execute next item, if any.
-                    queue.shift();
-                    executeQueue(transaction);
                 });
             });
         });
@@ -898,17 +926,34 @@ if (navigator.userAgent.indexOf("Trident/") !== -1)
     function handleFailedMetaOperations(metaOperations, mainOperations) {
         /// <param name="metaOperations" value="[{result: '', error: null, store: IDBObjectStore.prototype, op:'delete/add', args:[], mainOp: {store: IDBObjectStore.prototype, op: '', args: [], key: null}}]"></param>
         /// <param name="mainOperations" value="[{result: '', error: null, store: IDBObjectStore.prototype, op:'delete/add/put', args:[], key: null, trigSuccess: function(){}, trigError: function(){}, req: BlockingManystepsRequest.prototype}]"></param>
-        metaOperations.forEach(function(metaOperation) {
+        metaOperations.forEach(function (metaOperation) {
+            var mainOperation = metaOperation.mainOp;
+
+            // If the metaOperation failed, change the main operation to an operation that will fail for sure.
             if (metaOperation.error) {
-                var mainOperation = metaOperation.mainOp;
-                // Make the main operation trigger DataError
-                mainOperation.op = "delete";
-                mainOperation.args = [undefined];
-                // Revert all other index-operations that applies to the same main operation
-                var revertOperations = metaOperations
-                    .filter(function(mop) { return mop.mainOp === mainOperation && mop !== metaOperation; })
-                    .map(revertMetaOperation);
-                bulk(revertOperations);
+                // A meta operation failed. Now, make sure its main operation will fail
+                // and that all other meta operations 
+                if (!mainOperation.alreadyErrified) {
+                    // Make the main operation trigger an error of same type as we got
+                    if (metaOperation.error.name === 'ConstraintError') {
+                        // Trigger ConstraintError
+                        mainOperation.store = metaOperation.store.transaction.objectStore(STORENAME_META);
+                        mainOperation.op = "add";
+                        mainOperation.args = [{}, 1];
+                    } else {
+                        // Trigger DataError
+                        mainOperation.op = "delete";
+                        mainOperation.args = [undefined];
+                    }
+
+                    mainOperation.alreadyErrified = true;
+                }
+            } else {
+                // Make the main operation have a metaOps array containing all successfully performed metaOperations
+                // for the main operation. This will be handy when a main operation fails because we can easily look
+                // up its meta ops and revert them.
+                if (!mainOperation.metaOps) mainOperation.metaOps = [metaOperation];
+                else mainOperation.metaOps.push(metaOperation);
             }
         });
     }
@@ -960,6 +1005,9 @@ if (navigator.userAgent.indexOf("Trident/") !== -1)
                     .map(function(name) {
                         return meta.indexes[name];
                     });
+
+            if (!isValidKey(primKey))
+                return; // Don't put any indexes for invalid primary keys. The main operation will fail anyway.
 
             if (op === 'add') {
                 indexes.forEach(function (indexMeta) {
@@ -1295,7 +1343,7 @@ if (navigator.userAgent.indexOf("Trident/") !== -1)
                                     // (IDB spec requires all onsuccess/onerror to be called in the same order as the operation was called)
                                     // Reason for swallowErrors=false: IDB spec requires upgradeTransaction to abort if an index fails to
                                     // be added. Such situation could occur if the index is marked as unique and two objects have same key.
-                                    bulk(indexingOperations, null, { swallowErrors: false });
+                                    bulk(indexingOperations, { swallowErrors: false }, null);
                                     indexingOperations = [];
                                 }
                             } catch (e) {
@@ -1304,7 +1352,7 @@ if (navigator.userAgent.indexOf("Trident/") !== -1)
                             }
                             cursor.continue();
                         } else {
-                            bulk(indexingOperations, done, { swallowErrors: false });
+                            bulk(indexingOperations, { swallowErrors: false }, done);
                             if (registerHighestKey)
                                 OrigProtos.ObjectStore.put.call(
                                     store.transaction.objectStore(STORENAME_AUTOINC),
@@ -1351,88 +1399,22 @@ if (navigator.userAgent.indexOf("Trident/") !== -1)
                 if (meta.compound) {
                     // Compound primary key
                     // Key must not be provided when having inbound keys (compound is inbound)
-                    if (key) return this.add(null); // Trigger DOMException(DataError)!
-                    key = compoundToString(getByKeyPath(value, meta.keyPath));
+                    var stringifiedKey = compoundToString(getByKeyPath(value, meta.keyPath));
+                    var args = [value, stringifiedKey];
+                    if (key !== undefined) args = [{}, null]; // // Trigger DOMException(DataError)!     
                     return new BlockingWriteRequest({
                         store: this,
                         op: 'add',
-                        args: [deepClone(value), key], // IDB Spec requires a clone at this point.
-                        resultMapper: function (r) { return stringToCompound(r); }
+                        args: args,
+                        resultMapper: function (result) { return stringToCompound(result); }
                     });
-                    //addReq = origFunc.call(this, value, key);
                 }
                 var indexes = Object.keys(meta.indexes);
-                if (!meta.compound && indexes.length === 0) return origFunc.apply(this, arguments); // No indexes to deal with
+                if (indexes.length === 0) return origFunc.apply(this, arguments); // No indexes to deal with
                 return new BlockingWriteRequest({
                     store: this,
                     op: 'add',
                     args: arguments
-                });
-                var store = this;
-                return new IEGAPRequest(this, this.transaction, function(success, error) {
-                    var addEvent = null, errorEvent = null, indexAddFinished = false, rollbacks = [];
-                    var primKey = key || (store.keyPath && getByKeyPath(value, store.keyPath));
-                    if (!primKey) {
-                        addReq.onerror = error;
-                        addReq.onsuccess = function(ev) {
-                            addEvent = ev;
-                            primKey = addReq.result;
-                            addIndexKeys();
-                        }
-                    } else {
-                        // Caller provided primKey - we can start adding indexes at once! No need waiting for onsuccess. However, this means we may need to rollback our stuff...
-                        // So, why do it in such a complex way? Because otherwise we fail on a W3C web-platform-test where an item is added and then expected its index to be there the line after.
-                        addIndexKeys();
-                        addReq.onerror = function(ev) {
-                            errorEvent = ev;
-                            ev.preventDefault(); // Dont abort transaction quite yet. First roll-back our added indexes, then when done, call the real error eventhandler and check if it wants to preventDefault or not.
-                            checkFinally();
-                        }
-                        addReq.onsuccess = function(ev) {
-                            addEvent = ev;
-                            checkFinally();
-                        }
-                    }
-
-                    function checkFinally() {
-                        if (indexAddFinished && (addEvent || errorEvent))
-                            if (errorEvent) {
-                                var defaultPrevented = false;
-                                errorEvent.preventDefault = function () { defaultPrevented = true; };
-                                error(errorEvent);
-                                if (!defaultPrevented) store.transaction.abort(); // We prevented default in the first place. Now we must manually abort when having called the event handler
-                            } else
-                                success(addEvent, meta.compound ? stringToCompound(addReq.result) : addReq.result);
-                    }
-
-                    function addIndexKeys() {
-                        var nRequests = indexes.length;
-                        indexes.forEach(function (indexName) {
-                            var indexSpec = meta.indexes[indexName];
-                            var idxStore = store.transaction.objectStore(indexSpec.idxStoreName);
-                            if (indexSpec.multiEntry) {
-                                addMultiEntryIndexKeys(idxStore, indexSpec, value, primKey, rollbacks, checkComplete);
-                            } else if (indexSpec.compound) {
-                                addCompoundIndexKey(idxStore, indexSpec, value, primKey, rollbacks, checkComplete);
-                            } else {
-                                throw "IEGap assert error";
-                            }
-                        });
-
-                        function checkComplete() {
-                            if (--nRequests === 0) {
-                                if (!errorEvent) {
-                                    indexAddFinished = true;
-                                    checkFinally();
-                                } else {
-                                    bulk(rollbacks, function() {
-                                        indexAddFinished = true;
-                                        checkFinally();
-                                    }, "rolling back index additions");
-                                }
-                            }
-                        }
-                    }
                 });
             }
         });
