@@ -40,7 +40,7 @@ The polyfill is tested against the W3C web-platform-test suite that applies to I
 
 Tested with [Dexie.js](http://www.dexie.org)
 --------------------
-The polyfill is tested with the unit tests of [Dexie.js](http://www.dexie.org).
+The polyfill is tested with the unit tests of [Dexie.js](http://www.dexie.org). There are one test that fails though, probably due to [Issue #4](https://github.com/dfahlander/idb-iegap/issues/4).
 
 
 Please help me test, bugfix, simplify, optimize and spread this polyfill.
