@@ -1,3 +1,9 @@
+**NOTICE!**
+This library has not been maintained for several months. I've started a full rewrite of the library during Spring 2015 but the rewrite is still in a non-working state. Contributions to the branch "big-rewrite" are more than welcome. The rewriting is finished but fails in all tests, needs to be debugged.
+
+Reason for rewrite: The polyfill didn't handle bulks of put(), add() and delete() correctly. This is filed as [Issue #4](https://github.com/dfahlander/idb-iegap/issues/4). 
+
+
 Compound and MultiEntry Indexes with IE
 =======================================
 
