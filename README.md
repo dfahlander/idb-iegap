@@ -1,5 +1,5 @@
 **NOTICE!**
-This library has not been maintained for several months. I've started a full rewrite of the library during Spring 2015 but the rewrite is still in a non-working state. Contributions to the branch "big-rewrite" are more than welcome. The rewriting is finished but fails in all tests, needs to be debugged.
+This library has not been maintained for several months. I've started a full rewrite of the library during Spring 2015 but the rewrite is still in a non-working state. Contributions to the branch "big-rewrite" are more than welcome! The architecural rewrite is complete and finished, but it still fails in all tests. What I need is time to test and debug it, but ovdiously, i've failed to get the time to do that and i don't see so much light in the tunnel for that during the nearest future. So once again, please help me debug the branch "big-rewrite" ;)
 
 Reason for rewrite: The polyfill didn't handle bulks of put(), add() and delete() correctly. This is filed as [Issue #4](https://github.com/dfahlander/idb-iegap/issues/4). 
 
